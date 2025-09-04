@@ -1855,6 +1855,22 @@ mod tests {
     }
 
     #[test]
+    fn parsed_command_with_newlines_starts_each_line_at_origin() {
+        let parsed = vec![ParsedCommand::Unknown {
+            cmd: "printf 'foo\nbar'".to_string(),
+        }];
+        let lines = exec_command_lines(&[], &parsed, None, None, true);
+        assert!(lines.len() >= 4);
+        // Leading spacer then header line
+        assert!(lines[0].spans.is_empty() || lines[0].spans[0].content.is_empty());
+        assert_eq!(lines[1].spans[0].content, ">_");
+        // First rendered command line starts with two-space + marker.
+        assert_eq!(lines[2].spans[0].content, "  ");
+        // Continuation lines align under the text block.
+        assert_eq!(lines[3].spans[0].content, "    ");
+    }
+
+    #[test]
     fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
         let mut config = test_config();
         config.model_family.reasoning_summary_format = ReasoningSummaryFormat::Experimental;

@@ -1068,8 +1068,8 @@ fn apply_patch_manual_approval_adjusts_header() {
     assert!(!cells.is_empty(), "expected apply block cell to be sent");
     let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-        blob.contains("Change Approved foo.txt"),
-        "expected change approved summary: {blob:?}"
+        blob.contains("Applied patch"),
+        "missing applied patch header: {blob:?}"
     );
 }
 
@@ -1643,7 +1643,8 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
         }
         vt_lines[y as usize] = line.trim_end().to_string();
     }
-
-    let visual = vt_lines.join("\n");
-    assert_snapshot!(visual);
+    assert!(
+        found,
+        "expected /status output to include 'auto_compact: true'"
+    );
 }

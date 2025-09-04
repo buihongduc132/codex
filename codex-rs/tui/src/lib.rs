@@ -4,10 +4,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
 use app::App;
-use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
-use codex_core::CodexAuth;
-use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -15,9 +12,11 @@ use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use codex_login::AuthManager;
+use codex_login::AuthMode;
+use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
-use codex_protocol::mcp_protocol::AuthMode;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::error;
@@ -35,6 +34,7 @@ mod chatwidget;
 mod citation_regex;
 mod cli;
 mod clipboard_paste;
+mod common;
 pub mod custom_terminal;
 mod diff_render;
 mod exec_command;
@@ -49,7 +49,6 @@ mod markdown_stream;
 pub mod onboarding;
 mod pager_overlay;
 mod render;
-mod resume_picker;
 mod session_log;
 mod shimmer;
 mod slash_command;
@@ -209,7 +208,7 @@ pub async fn run_main(
     // use RUST_LOG env var, default to info for codex crates.
     let env_filter = || {
         EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("codex_core=info,codex_tui=info"))
+            .unwrap_or_else(|_| EnvFilter::new("codex_core=trace,codex_tui=trace"))
     };
 
     // Build layered subscriber:
@@ -259,6 +258,7 @@ async fn run_ratatui_app(
     if let Some(latest_version) = updates::get_upgrade_version(&config) {
         use ratatui::style::Stylize as _;
         use ratatui::text::Line;
+        use ratatui::text::Span;
 
         let current_version = env!("CARGO_PKG_VERSION");
         let exe = std::env::current_exe()?;
@@ -267,35 +267,35 @@ async fn run_ratatui_app(
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
             "✨⬆️ Update available!".bold().cyan(),
-            " ".into(),
-            format!("{current_version} -> {latest_version}.").into(),
+            Span::raw(" "),
+            Span::raw(format!("{current_version} -> {latest_version}.")),
         ]));
 
         if managed_by_npm {
             let npm_cmd = "npm install -g @openai/codex@latest";
             lines.push(Line::from(vec![
-                "Run ".into(),
+                Span::raw("Run "),
                 npm_cmd.cyan(),
-                " to update.".into(),
+                Span::raw(" to update."),
             ]));
         } else if cfg!(target_os = "macos")
             && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
         {
             let brew_cmd = "brew upgrade codex";
             lines.push(Line::from(vec![
-                "Run ".into(),
+                Span::raw("Run "),
                 brew_cmd.cyan(),
-                " to update.".into(),
+                Span::raw(" to update."),
             ]));
         } else {
             lines.push(Line::from(vec![
-                "See ".into(),
+                Span::raw("See "),
                 "https://github.com/openai/codex/releases/latest".cyan(),
-                " for the latest releases and installation options.".into(),
+                Span::raw(" for the latest releases and installation options."),
             ]));
         }
 
-        lines.push("".into());
+        lines.push(Line::from(""));
         tui.insert_history_lines(lines);
     }
 
@@ -305,27 +305,24 @@ async fn run_ratatui_app(
     let Cli {
         prompt,
         images,
-        resume,
-        r#continue,
+        auto_compact,
         ..
     } = cli;
 
-    let auth_manager = AuthManager::shared(
-        config.codex_home.clone(),
-        config.preferred_auth_method,
-        config.responses_originator_header.clone(),
-    );
+    let auth_manager = AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
     let login_status = get_login_status(&config);
     let should_show_onboarding =
         should_show_onboarding(login_status, &config, should_show_trust_screen);
     if should_show_onboarding {
         let directory_trust_decision = run_onboarding_app(
             OnboardingScreenArgs {
+                codex_home: config.codex_home.clone(),
+                cwd: config.cwd.clone(),
                 show_login_screen: should_show_login_screen(login_status, &config),
                 show_trust_screen: should_show_trust_screen,
                 login_status,
+                preferred_auth_method: config.preferred_auth_method,
                 auth_manager: auth_manager.clone(),
-                config: config.clone(),
             },
             &mut tui,
         )
@@ -336,37 +333,7 @@ async fn run_ratatui_app(
         }
     }
 
-    let resume_selection = if r#continue {
-        match RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
-            Ok(page) => page
-                .items
-                .first()
-                .map(|it| resume_picker::ResumeSelection::Resume(it.path.clone()))
-                .unwrap_or(resume_picker::ResumeSelection::StartFresh),
-            Err(_) => resume_picker::ResumeSelection::StartFresh,
-        }
-    } else if resume {
-        match resume_picker::run_resume_picker(&mut tui, &config.codex_home).await? {
-            resume_picker::ResumeSelection::Exit => {
-                restore();
-                session_log::log_session_end();
-                return Ok(codex_core::protocol::TokenUsage::default());
-            }
-            other => other,
-        }
-    } else {
-        resume_picker::ResumeSelection::StartFresh
-    };
-
-    let app_result = App::run(
-        &mut tui,
-        auth_manager,
-        config,
-        prompt,
-        images,
-        resume_selection,
-    )
-    .await;
+    let app_result = App::run(&mut tui, auth_manager, config, prompt, images, auto_compact).await;
 
     restore();
     // Mark the end of the recorded session.
@@ -398,11 +365,7 @@ fn get_login_status(config: &Config) -> LoginStatus {
         // Reading the OpenAI API key is an async operation because it may need
         // to refresh the token. Block on it.
         let codex_home = config.codex_home.clone();
-        match CodexAuth::from_codex_home(
-            &codex_home,
-            config.preferred_auth_method,
-            &config.responses_originator_header,
-        ) {
+        match CodexAuth::from_codex_home(&codex_home, config.preferred_auth_method) {
             Ok(Some(auth)) => LoginStatus::AuthMode(auth.mode),
             Ok(None) => LoginStatus::NotAuthenticated,
             Err(err) => {

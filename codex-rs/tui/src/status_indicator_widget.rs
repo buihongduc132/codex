@@ -25,8 +25,16 @@ pub(crate) struct StatusIndicatorWidget {
     header: String,
     /// Queued user messages to display under the status line.
     queued_messages: Vec<String>,
+    /// Timeout in milliseconds for the current command (if any).
+    timeout_ms: Option<u64>,
 
+    /// Start of the current overall task (used when no command timeout is set).
     start_time: Instant,
+    /// Start of the current command when a timeout is set.
+    /// This lets us show (elapsed/timeout) based on the command runtime
+    /// rather than the full task duration to avoid confusing displays like
+    /// "450s/120s" when the task outlives individual commands.
+    command_start_time: Option<Instant>,
     app_event_tx: AppEventSender,
     frame_requester: FrameRequester,
 }
@@ -36,7 +44,9 @@ impl StatusIndicatorWidget {
         Self {
             header: String::from("Working"),
             queued_messages: Vec::new(),
+            timeout_ms: None,
             start_time: Instant::now(),
+            command_start_time: None,
 
             app_event_tx,
             frame_requester,
@@ -88,6 +98,16 @@ impl StatusIndicatorWidget {
         // Ensure a redraw so changes are visible.
         self.frame_requester.schedule_frame();
     }
+
+    /// Set the timeout for the current command.
+    pub(crate) fn set_timeout(&mut self, timeout_ms: Option<u64>) {
+        self.timeout_ms = timeout_ms;
+        // When a command timeout is provided, start a new per-command timer.
+        // When cleared (None), stop using the per-command timer and fall back
+        // to overall task elapsed time.
+        self.command_start_time = self.timeout_ms.map(|_| Instant::now());
+        self.frame_requester.schedule_frame();
+    }
 }
 
 impl WidgetRef for StatusIndicatorWidget {
@@ -99,17 +119,27 @@ impl WidgetRef for StatusIndicatorWidget {
         // Schedule next animation frame.
         self.frame_requester
             .schedule_frame_in(Duration::from_millis(32));
-        let elapsed = self.start_time.elapsed().as_secs();
+        // Choose elapsed source: prefer per-command elapsed when a timeout is
+        // present; otherwise show overall task elapsed.
+        let elapsed = match (self.timeout_ms, self.command_start_time) {
+            (Some(_), Some(t0)) => t0.elapsed().as_secs(),
+            _ => self.start_time.elapsed().as_secs(),
+        };
 
         // Plain rendering: no borders or padding so the live cell is visually indistinguishable from terminal scrollback.
         let mut spans = vec![" ".into()];
         spans.extend(shimmer_spans(&self.header));
-        spans.extend(vec![
-            " ".into(),
-            format!("({elapsed}s • ").dim(),
-            "Esc".dim().bold(),
-            " to interrupt)".dim(),
-        ]);
+        spans.push(" ".into());
+
+        // Show elapsed time and timeout if available
+        if let Some(timeout_ms) = self.timeout_ms {
+            let timeout_s = timeout_ms / 1000;
+            spans.push(format!("({elapsed}s/{timeout_s}s • ").dim());
+        } else {
+            spans.push(format!("({elapsed}s • ").dim());
+        }
+
+        spans.extend(vec!["Esc".dim().bold(), " to interrupt)".dim()]);
 
         // Build lines: status, then queued messages, then spacer.
         let mut lines: Vec<Line<'static>> = Vec::new();

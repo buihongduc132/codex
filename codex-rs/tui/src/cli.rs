@@ -64,6 +64,10 @@ pub struct Cli {
     #[arg(long = "full-auto", default_value_t = false)]
     pub full_auto: bool,
 
+    /// Automatically run /compact when the remaining model context is 10% or less.
+    #[arg(long = "auto-compact", default_value_t = true)]
+    pub auto_compact: bool,
+
     /// Skip all confirmation prompts and execute commands without sandboxing.
     /// EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed.
     #[arg(
@@ -84,4 +88,17 @@ pub struct Cli {
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn auto_compact_defaults_true() {
+        // Parse with no flags; ensure default true
+        let cli = Cli::parse_from(["codex-tui"]);
+        assert!(cli.auto_compact, "--auto-compact should default to true");
+    }
 }

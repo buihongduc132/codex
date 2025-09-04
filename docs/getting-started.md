@@ -8,7 +8,7 @@
 | `codex "..."`      | Initial prompt for interactive TUI | `codex "fix lint errors"`       |
 | `codex exec "..."` | Non-interactive "automation mode"  | `codex exec "explain utils.ts"` |
 
-Key flags: `--model/-m`, `--ask-for-approval/-a`.
+Key flags: `--model/-m`, `--ask-for-approval/-a`, `--auto-compact`.
 
 Resume options:
 
@@ -92,6 +92,16 @@ codex completion bash
 codex completion zsh
 codex completion fish
 ```
+
+#### `--auto-compact` flag
+
+When enabled, Codex automatically runs `/compact` to summarize the conversation history when context usage reaches 90% (10% remaining). This helps maintain long conversations without hitting context window limits.
+
+```shell
+codex --auto-compact "help me refactor this large codebase"
+```
+
+The compact operation replaces the conversation history with a structured summary while preserving all important context, allowing you to continue working without interruption.
 
 #### `--cd`/`-C` flag
 
