@@ -2994,13 +2994,9 @@ while True:
         config.mcp_servers.insert(
             "dummy".to_string(),
             McpServerConfig {
-                command: "python3".to_string(),
-                args: vec!["-u".to_string(), script_path.to_string_lossy().into()],
-            McpServerConfig {
                 command: Some("python3".to_string()),
                 args: vec!["-u".to_string(), script_path.to_string_lossy().into()],
                 env: None,
-            },
             },
         );
 
