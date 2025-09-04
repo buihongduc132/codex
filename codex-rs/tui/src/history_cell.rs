@@ -5,6 +5,7 @@ use crate::markdown::append_markdown;
 use crate::slash_command::SlashCommand;
 use crate::text_formatting::format_and_truncate_tool_result;
 use base64::Engine;
+use chrono::Local;
 use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
 use codex_common::elapsed::format_duration;
@@ -18,6 +19,7 @@ use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
+use codex_core::shell::default_user_shell;
 use codex_login::get_auth_file;
 use codex_login::try_read_auth_json;
 use codex_protocol::parse_command::ParsedCommand;
@@ -254,6 +256,8 @@ pub(crate) fn new_session_info(
         history_entry_count: _,
     } = event;
     if is_first_event {
+        // Build timestamp prefix like "[MM-DD_hhmm] "
+        let ts = Local::now().format("[%m-%d_%H%M]").to_string();
         let cwd_str = match relativize_to_home(&config.cwd) {
             Some(rel) if !rel.as_os_str().is_empty() => {
                 let sep = std::path::MAIN_SEPARATOR;
@@ -264,18 +268,17 @@ pub(crate) fn new_session_info(
         };
 
         let lines: Vec<Line<'static>> = vec![
-            Line::from(Span::from("")),
             Line::from(vec![
                 Span::raw(">_ ").dim(),
+                ts.bold().cyan(),
+                Span::raw(" "),
                 Span::styled(
-                    "You are using OpenAI Codex in",
+                    "You are using MODDED OpenAI Codex in",
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(format!(" {cwd_str}")).dim(),
             ]),
-            Line::from("".dim()),
-            Line::from(" To get started, describe a task or try one of these commands:".dim()),
-            Line::from("".dim()),
+            Line::from(Span::from("")),
             Line::from(vec![
                 Span::styled(
                     " /init",
@@ -656,10 +659,262 @@ pub(crate) fn new_status_output(
     config: &Config,
     usage: &TokenUsage,
     session_id: &Option<Uuid>,
+    auto_compact_enabled: bool,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
     lines.push(Line::from("/status".magenta()));
+
+    // 🔧 Raw LLM Parameters (AS-IS)
+    lines.push(Line::from(vec![
+        padded_emoji("🔧").into(),
+        "Raw LLM Parameters".bold(),
+    ]));
+
+    // Core Configuration
+    lines.push(Line::from(vec![
+        "  • model: ".into(),
+        format!("\"{}\"", config.model).into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • model_family: ".into(),
+        format!("\"{}\"", config.model_family.family).into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • model_provider_id: ".into(),
+        format!("\"{}\"", config.model_provider_id).into(),
+    ]));
+
+    if let Some(window) = config.model_context_window {
+        lines.push(Line::from(vec![
+            "  • model_context_window: ".into(),
+            window.to_string().into(),
+        ]));
+    }
+    if let Some(max_tokens) = config.model_max_output_tokens {
+        lines.push(Line::from(vec![
+            "  • model_max_output_tokens: ".into(),
+            max_tokens.to_string().into(),
+        ]));
+    }
+
+    // Approval and Sandbox Policies
+    lines.push(Line::from(vec![
+        "  • approval_policy: ".into(),
+        format!("\"{}\"", config.approval_policy).into(),
+    ]));
+
+    let sandbox_debug = format!("{:?}", config.sandbox_policy);
+    lines.push(Line::from(vec![
+        "  • sandbox_policy: ".into(),
+        sandbox_debug.into(),
+    ]));
+
+    // Shell Environment Policy
+    let shell_env_debug = format!("{:?}", config.shell_environment_policy);
+    lines.push(Line::from(vec![
+        "  • shell_environment_policy: ".into(),
+        shell_env_debug.into(),
+    ]));
+
+    // Execution Settings
+    lines.push(Line::from(vec![
+        "  • exec_timeout_ms: ".into(),
+        config.exec_timeout_ms.to_string().into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • disable_response_storage: ".into(),
+        config.disable_response_storage.to_string().into(),
+    ]));
+
+    // Reasoning Settings (if applicable)
+    if config.model_family.supports_reasoning_summaries {
+        lines.push(Line::from(vec![
+            "  • model_reasoning_effort: ".into(),
+            format!("\"{}\"", config.model_reasoning_effort).into(),
+        ]));
+        lines.push(Line::from(vec![
+            "  • model_reasoning_summary: ".into(),
+            format!("\"{}\"", config.model_reasoning_summary).into(),
+        ]));
+    }
+
+    // Verbosity (GPT-5 only)
+    if let Some(verbosity) = config.model_verbosity {
+        lines.push(Line::from(vec![
+            "  • model_verbosity: ".into(),
+            format!("\"{verbosity}\"").into(),
+        ]));
+    }
+    // Auto-compact setting
+    lines.push(Line::from(vec![
+        "  • auto_compact: ".into(),
+        auto_compact_enabled.to_string().into(),
+    ]));
+
+    // Tool Settings
+    lines.push(Line::from(vec![
+        "  • include_plan_tool: ".into(),
+        config.include_plan_tool.to_string().into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • include_apply_patch_tool: ".into(),
+        config.include_apply_patch_tool.to_string().into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • tools_web_search_request: ".into(),
+        config.tools_web_search_request.to_string().into(),
+    ]));
+
+    // Working Directory
+    lines.push(Line::from(vec![
+        "  • cwd: ".into(),
+        format!("\"{}\"", config.cwd.display()).into(),
+    ]));
+
+    // Instructions
+    if let Some(user_instructions) = &config.user_instructions {
+        let truncated = if user_instructions.len() > 100 {
+            format!(
+                "\"{}...\" ({} chars)",
+                &user_instructions[..97],
+                user_instructions.len()
+            )
+        } else {
+            format!("\"{user_instructions}\"")
+        };
+        lines.push(Line::from(vec![
+            "  • user_instructions: ".into(),
+            truncated.into(),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            "  • user_instructions: ".into(),
+            "null".into(),
+        ]));
+    }
+
+    if let Some(base_instructions) = &config.base_instructions {
+        let truncated = if base_instructions.len() > 100 {
+            format!(
+                "\"{}...\" ({} chars)",
+                &base_instructions[..97],
+                base_instructions.len()
+            )
+        } else {
+            format!("\"{base_instructions}\"")
+        };
+        lines.push(Line::from(vec![
+            "  • base_instructions: ".into(),
+            truncated.into(),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            "  • base_instructions: ".into(),
+            "null".into(),
+        ]));
+    }
+
+    // 🌐 Environment Context (sent to LLM)
+    lines.push(Line::from(vec![
+        padded_emoji("🌐").into(),
+        "Environment Context (sent to LLM)".bold(),
+    ]));
+
+    // Manually create the environment context XML that would be sent to the LLM
+    let shell = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async { default_user_shell().await })
+    });
+
+    // Create the XML manually since EnvironmentContext is private
+    let mut env_xml_lines = vec!["<environment_context>".to_string()];
+    env_xml_lines.push(format!("  <cwd>{}</cwd>", config.cwd.display()));
+    env_xml_lines.push(format!(
+        "  <approval_policy>{}</approval_policy>",
+        config.approval_policy
+    ));
+
+    let sandbox_mode = match &config.sandbox_policy {
+        SandboxPolicy::DangerFullAccess => "danger-full-access",
+        SandboxPolicy::ReadOnly => "read-only",
+        SandboxPolicy::WorkspaceWrite { .. } => "workspace-write",
+    };
+    env_xml_lines.push(format!("  <sandbox_mode>{sandbox_mode}</sandbox_mode>"));
+
+    let network_access = match &config.sandbox_policy {
+        SandboxPolicy::DangerFullAccess => "enabled",
+        SandboxPolicy::ReadOnly => "restricted",
+        SandboxPolicy::WorkspaceWrite { network_access, .. } => {
+            if *network_access {
+                "enabled"
+            } else {
+                "restricted"
+            }
+        }
+    };
+    env_xml_lines.push(format!(
+        "  <network_access>{network_access}</network_access>"
+    ));
+
+    if let Some(shell_name) = shell.name() {
+        env_xml_lines.push(format!("  <shell>{shell_name}</shell>"));
+    }
+    env_xml_lines.push("</environment_context>".to_string());
+
+    // Show the raw XML that gets sent to the LLM
+    lines.push(Line::from("  Raw XML sent to LLM:".dim()));
+    for xml_line in env_xml_lines {
+        lines.push(Line::from(format!("    {xml_line}").dim()));
+    }
+
+    // 🔌 MCP Servers Configuration
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        padded_emoji("🔌").into(),
+        "MCP Servers (affect available tools)".bold(),
+    ]));
+
+    if config.mcp_servers.is_empty() {
+        lines.push(Line::from("  • mcp_servers: {}".dim()));
+    } else {
+        lines.push(Line::from(
+            format!("  • mcp_servers: {} configured", config.mcp_servers.len()).dim(),
+        ));
+        for (name, server_config) in &config.mcp_servers {
+            lines.push(Line::from(
+                format!("    - {}: {}", name, server_config.command).dim(),
+            ));
+            if !server_config.args.is_empty() {
+                lines.push(Line::from(
+                    format!("      args: {:?}", server_config.args).dim(),
+                ));
+            }
+        }
+    }
+
+    // 🏠 Codex Home and Other Paths
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        padded_emoji("🏠").into(),
+        "System Paths".bold(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • codex_home: ".into(),
+        format!("\"{}\"", config.codex_home.display()).dim(),
+    ]));
+    if let Some(sandbox_exe) = &config.codex_linux_sandbox_exe {
+        lines.push(Line::from(vec![
+            "  • codex_linux_sandbox_exe: ".into(),
+            format!("\"{}\"", sandbox_exe.display()).dim(),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            "  • codex_linux_sandbox_exe: ".into(),
+            "null".dim(),
+        ]));
+    }
+
+    lines.push(Line::from(""));
 
     let config_entries = create_config_summary_entries(config);
     let lookup = |k: &str| -> String {

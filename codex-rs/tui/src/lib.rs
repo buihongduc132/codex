@@ -207,7 +207,7 @@ pub async fn run_main(
     // use RUST_LOG env var, default to info for codex crates.
     let env_filter = || {
         EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("codex_core=info,codex_tui=info"))
+            .unwrap_or_else(|_| EnvFilter::new("codex_core=trace,codex_tui=trace"))
     };
 
     // Build layered subscriber:
@@ -301,7 +301,12 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&config);
 
-    let Cli { prompt, images, .. } = cli;
+    let Cli {
+        prompt,
+        images,
+        auto_compact,
+        ..
+    } = cli;
 
     let auth_manager = AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
     let login_status = get_login_status(&config);
@@ -327,7 +332,7 @@ async fn run_ratatui_app(
         }
     }
 
-    let app_result = App::run(&mut tui, auth_manager, config, prompt, images).await;
+    let app_result = App::run(&mut tui, auth_manager, config, prompt, images, auto_compact).await;
 
     restore();
     // Mark the end of the recorded session.

@@ -60,6 +60,7 @@ impl App {
         config: Config,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
+        auto_compact: bool,
     ) -> Result<TokenUsage> {
         use tokio_stream::StreamExt;
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
@@ -77,6 +78,7 @@ impl App {
             initial_prompt,
             initial_images,
             enhanced_keys_supported,
+            auto_compact,
         );
 
         let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
@@ -174,6 +176,7 @@ impl App {
                     None,
                     Vec::new(),
                     self.enhanced_keys_supported,
+                    false,
                 );
                 tui.frame_requester().schedule_frame();
             }

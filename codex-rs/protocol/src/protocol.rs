@@ -702,6 +702,8 @@ pub struct ExecCommandBeginEvent {
     /// The command's working directory if not the default cwd for the agent.
     pub cwd: PathBuf,
     pub parsed_cmd: Vec<ParsedCommand>,
+    /// Timeout for the command in milliseconds.
+    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

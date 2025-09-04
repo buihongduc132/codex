@@ -305,6 +305,7 @@ pub(crate) struct TurnContext {
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) disable_response_storage: bool,
     pub(crate) tools_config: ToolsConfig,
+    pub(crate) exec_timeout_ms: u64,
 }
 
 impl TurnContext {
@@ -531,6 +532,7 @@ impl Session {
             shell_environment_policy: config.shell_environment_policy.clone(),
             cwd,
             disable_response_storage,
+            exec_timeout_ms: config.exec_timeout_ms,
         };
         let sess = Arc::new(Session {
             session_id,
@@ -714,6 +716,7 @@ impl Session {
             command_for_display,
             cwd,
             apply_patch,
+            timeout_ms,
         } = exec_command_context;
         let msg = match apply_patch {
             Some(ApplyPatchCommandContext {
@@ -736,6 +739,7 @@ impl Session {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
+                timeout_ms,
             }),
         };
         let event = Event {
@@ -973,6 +977,7 @@ pub(crate) struct ExecCommandContext {
     pub(crate) command_for_display: Vec<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) apply_patch: Option<ApplyPatchCommandContext>,
+    pub(crate) timeout_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1134,6 +1139,7 @@ async fn submission_loop(
                     shell_environment_policy: prev.shell_environment_policy.clone(),
                     cwd: new_cwd.clone(),
                     disable_response_storage: prev.disable_response_storage,
+                    exec_timeout_ms: prev.exec_timeout_ms,
                 };
 
                 // Install the new persistent context for subsequent tasks/turns.
@@ -1216,6 +1222,7 @@ async fn submission_loop(
                         shell_environment_policy: turn_context.shell_environment_policy.clone(),
                         cwd,
                         disable_response_storage: turn_context.disable_response_storage,
+                        exec_timeout_ms: turn_context.exec_timeout_ms,
                     };
                     // TODO: record the new environment context in the conversation history
                     // no current task, spawn a new one with the per‑turn context
@@ -2239,8 +2246,7 @@ async fn handle_function_call(
         _ => {
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
-                    // TODO(mbolin): Determine appropriate timeout for tool call.
-                    let timeout = None;
+                    let timeout = Some(Duration::from_millis(turn_context.exec_timeout_ms));
                     handle_mcp_tool_call(
                         sess, &sub_id, call_id, server, tool_name, arguments, timeout,
                     )
@@ -2317,7 +2323,7 @@ fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> Ex
     ExecParams {
         command: params.command,
         cwd: turn_context.resolve_path(params.workdir.clone()),
-        timeout_ms: params.timeout_ms,
+        timeout_ms: params.timeout_ms.or(Some(turn_context.exec_timeout_ms)),
         env: create_env(&turn_context.shell_environment_policy),
         with_escalated_permissions: params.with_escalated_permissions,
         justification: params.justification,
@@ -2530,6 +2536,7 @@ async fn handle_container_exec_with_params(
                 changes: convert_apply_patch_to_protocol(&action),
             },
         ),
+        timeout_ms: params.timeout_ms.unwrap_or(crate::exec::DEFAULT_TIMEOUT_MS),
     };
 
     let params = maybe_translate_shell_command(params, sess, turn_context);
@@ -2963,6 +2970,160 @@ fn convert_call_tool_result_to_function_call_output_payload(
     FunctionCallOutputPayload {
         content,
         success: Some(is_success),
+    }
+}
+
+#[cfg(test)]
+mod tests_timeout {
+    use super::*;
+    use crate::config::ConfigOverrides;
+    use crate::config::ConfigToml;
+    use crate::config_types::McpServerConfig;
+    use codex_login::AuthManager;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    const DUMMY_MCP_SERVER: &str = r#"
+import sys, json, time
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + '\n')
+    sys.stdout.flush()
+
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    method = req.get('method')
+    id_ = req.get('id')
+    if method == 'initialize':
+        send({
+            'jsonrpc': '2.0',
+            'id': id_,
+            'result': {
+                'protocolVersion': '2025-06-18',
+                'capabilities': {'tools': {'listChanged': True}},
+                'serverInfo': {'name': 'dummy', 'version': '0.0.0'}
+            }
+        })
+    elif method == 'notifications/initialized':
+        pass
+    elif method == 'tools/list':
+        send({
+            'jsonrpc': '2.0',
+            'id': id_,
+            'result': {
+                'tools': [{
+                    'name': 'sleep',
+                    'description': 'sleep',
+                    'inputSchema': {
+                        'type': 'object',
+                        'properties': {'duration_ms': {'type': 'integer'}},
+                        'required': ['duration_ms']
+                    }
+                }]}
+        })
+    elif method == 'tools/call':
+        args = req.get('params', {}).get('arguments') or {}
+        duration_ms = args.get('duration_ms', 0)
+        time.sleep(duration_ms / 1000.0)
+        send({
+            'jsonrpc': '2.0',
+            'id': id_,
+            'result': {
+                'content': [{'type': 'text', 'text': 'slept'}],
+                'isError': False
+            }
+        })
+    else:
+        send({'jsonrpc': '2.0', 'id': id_, 'error': {'code': -32601, 'message': 'unknown method'}})
+"#;
+
+    async fn setup_session(exec_timeout_ms: u64) -> (Arc<Session>, TurnContext, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let script_path = tmp.path().join("dummy_mcp_server.py");
+        std::fs::write(&script_path, DUMMY_MCP_SERVER).unwrap();
+
+        let mut config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            tmp.path().to_path_buf(),
+        )
+        .expect("defaults for test should always succeed");
+        config.mcp_servers.insert(
+            "dummy".to_string(),
+            McpServerConfig {
+                command: "python3".to_string(),
+                args: vec!["-u".to_string(), script_path.to_string_lossy().into()],
+            McpServerConfig {
+                command: Some("python3".to_string()),
+                args: vec!["-u".to_string(), script_path.to_string_lossy().into()],
+                env: None,
+            },
+            },
+        );
+
+        let (tx_event, _rx_event) = async_channel::unbounded();
+        let configure_session = ConfigureSession {
+            provider: config.model_provider.clone(),
+            model: config.model.clone(),
+            model_reasoning_effort: config.model_reasoning_effort,
+            model_reasoning_summary: config.model_reasoning_summary,
+            user_instructions: None,
+            base_instructions: config.base_instructions.clone(),
+            approval_policy: config.approval_policy,
+            sandbox_policy: config.sandbox_policy.clone(),
+            disable_response_storage: config.disable_response_storage,
+            notify: config.notify.clone(),
+            cwd: config.cwd.clone(),
+            resume_path: None,
+        };
+
+        let auth_manager =
+            AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
+        let (session, mut turn_context) = Session::new(
+            configure_session,
+            Arc::new(config),
+            auth_manager,
+            tx_event,
+            None,
+        )
+        .await
+        .unwrap();
+        turn_context.exec_timeout_ms = exec_timeout_ms;
+        (session, turn_context, tmp)
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_call_times_out() {
+        let (session, turn_context, _tmp) = setup_session(10).await;
+        let args = json!({ "duration_ms": 2000 }).to_string();
+        let mut diff = TurnDiffTracker::default();
+        let response = handle_function_call(
+            &session,
+            &turn_context,
+            &mut diff,
+            "sub".to_string(),
+            "dummy__sleep".to_string(),
+            args,
+            "call".to_string(),
+        )
+        .await;
+        match response {
+            ResponseInputItem::McpToolCallOutput { result, .. } => {
+                assert!(result.is_err(), "expected timeout error, got: {result:?}");
+            }
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                // Windows OS
+                assert!(
+                    output.success.is_none(),
+                    "expected timeout error, got: {output:?}"
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }
 

@@ -24,6 +24,8 @@ pub(crate) struct StatusIndicatorWidget {
     header: String,
     /// Queued user messages to display under the status line.
     queued_messages: Vec<String>,
+    /// Timeout in milliseconds for the current command (if any).
+    timeout_ms: Option<u64>,
 
     start_time: Instant,
     app_event_tx: AppEventSender,
@@ -35,6 +37,7 @@ impl StatusIndicatorWidget {
         Self {
             header: String::from("Working"),
             queued_messages: Vec::new(),
+            timeout_ms: None,
             start_time: Instant::now(),
 
             app_event_tx,
@@ -87,6 +90,12 @@ impl StatusIndicatorWidget {
         // Ensure a redraw so changes are visible.
         self.frame_requester.schedule_frame();
     }
+
+    /// Set the timeout for the current command.
+    pub(crate) fn set_timeout(&mut self, timeout_ms: Option<u64>) {
+        self.timeout_ms = timeout_ms;
+        self.frame_requester.schedule_frame();
+    }
 }
 
 impl WidgetRef for StatusIndicatorWidget {
@@ -103,12 +112,17 @@ impl WidgetRef for StatusIndicatorWidget {
         // Plain rendering: no borders or padding so the live cell is visually indistinguishable from terminal scrollback.
         let mut spans = vec![" ".into()];
         spans.extend(shimmer_spans(&self.header));
-        spans.extend(vec![
-            " ".into(),
-            format!("({elapsed}s • ").dim(),
-            "Esc".dim().bold(),
-            " to interrupt)".dim(),
-        ]);
+        spans.push(" ".into());
+
+        // Show elapsed time and timeout if available
+        if let Some(timeout_ms) = self.timeout_ms {
+            let timeout_s = timeout_ms / 1000;
+            spans.push(format!("({elapsed}s/{timeout_s}s • ").dim());
+        } else {
+            spans.push(format!("({elapsed}s • ").dim());
+        }
+
+        spans.extend(vec!["Esc".dim().bold(), " to interrupt)".dim()]);
 
         // Build lines: status, then queued messages, then spacer.
         let mut lines: Vec<Line<'static>> = Vec::new();
