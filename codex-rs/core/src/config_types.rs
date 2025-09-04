@@ -13,7 +13,9 @@ use strum_macros::Display;
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
-    pub command: String,
+    /// Path to the MCP server executable. Optional so invalid entries don't
+    /// break config parsing; they are skipped at runtime with a warning.
+    pub command: Option<String>,
 
     #[serde(default)]
     pub args: Vec<String>,

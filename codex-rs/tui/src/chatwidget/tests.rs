@@ -143,6 +143,7 @@ async fn helpers_are_available_and_do_not_panic() {
         None,
         Vec::new(),
         false,
+        false,
     );
     // Basic construction sanity.
     let _ = &mut w;
@@ -187,6 +188,8 @@ fn make_chatwidget_manual() -> (
         show_welcome_banner: true,
         last_history_was_exec: false,
         queued_user_messages: std::collections::VecDeque::new(),
+        auto_compact_enabled: false,
+        pending_user_message: None,
     };
     (widget, rx, op_rx)
 }
@@ -287,6 +290,7 @@ fn exec_history_cell_shows_working_then_completed() {
                 }
                 .into(),
             ],
+            timeout_ms: 10000,
         }),
     });
 
@@ -338,6 +342,7 @@ fn exec_history_cell_shows_working_then_failed() {
                 }
                 .into(),
             ],
+            timeout_ms: 10000,
         }),
     });
 
@@ -391,6 +396,7 @@ fn interrupt_exec_marks_failed_snapshot() {
                 }
                 .into(),
             ],
+            timeout_ms: 10000,
         }),
     });
 
@@ -431,6 +437,7 @@ fn exec_history_extends_previous_when_consecutive() {
                 }
                 .into(),
             ],
+            timeout_ms: 10000,
         }),
     });
     chat.handle_codex_event(Event {
@@ -461,6 +468,7 @@ fn exec_history_extends_previous_when_consecutive() {
                 }
                 .into(),
             ],
+            timeout_ms: 10000,
         }),
     });
     chat.handle_codex_event(Event {
@@ -624,7 +632,7 @@ async fn binary_size_transcript_matches_ideal_fixture() {
     // Compare only after the last session banner marker. Skip the transient
     // 'thinking' header if present, and start from the first non-empty line
     // of content that follows.
-    const MARKER_PREFIX: &str = ">_ You are using OpenAI Codex in ";
+    const MARKER_PREFIX: &str = ">_ You are using MODDED OpenAI Codex in ";
     let last_marker_line_idx = lines
         .iter()
         .rposition(|l| l.starts_with(MARKER_PREFIX))
@@ -1503,4 +1511,53 @@ fn deltas_then_same_final_message_are_rendered_snapshot() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     assert_snapshot!(combined);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_output_includes_auto_compact_flag() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    // Enable auto-compact and emit status output
+    chat.auto_compact_enabled = true;
+    chat.add_status_output();
+
+    // Drain and verify presence of the auto_compact line
+    let cells = drain_insert_history(&mut rx);
+    let mut found = false;
+    for lines in cells {
+        let blob = lines_to_single_string(&lines);
+        if blob.contains("auto_compact: true") {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "expected /status output to include 'auto_compact: true'"
+    );
+}
+
+#[test]
+fn auto_compact_triggers_when_remaining_is_low() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    // Configure small remaining percentage and enable auto-compact
+    chat.auto_compact_enabled = true;
+    chat.config.model_context_window = Some(100);
+    chat.last_token_usage.total_tokens = 95; // 5% remaining
+
+    // Submit a message; should trigger a Compact op instead of immediate submit
+    chat.on_user_submit(UserMessage::from("hi".to_string()));
+
+    let mut saw_compact = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::CodexOp(codex_op) = ev
+            && matches!(codex_op, Op::Compact)
+        {
+            saw_compact = true;
+            break;
+        }
+    }
+    assert!(
+        saw_compact,
+        "expected auto-compact to trigger when <=10% remaining"
+    );
 }

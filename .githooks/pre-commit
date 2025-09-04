@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Git pre-commit hook to prevent coverage regressions in codex-rs workspace.
+# Uses codex-rs/scripts/coverage_guard.sh check
+set -euo pipefail
+REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT_DIR/codex-rs"
+
+# Skip if only non-rust paths changed (basic heuristic): allow user to force with SKIP_COVERAGE=1
+if [ "${SKIP_COVERAGE:-}" = "1" ]; then
+  echo "[pre-commit] SKIP_COVERAGE=1 set; skipping coverage check"
+  exit 0
+fi
+
+# Run coverage guard (generates baseline if missing)
+./scripts/coverage_guard.sh check
+

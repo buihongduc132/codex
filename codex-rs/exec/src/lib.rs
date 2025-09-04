@@ -174,6 +174,24 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
 
     if oss {
+        // Emit a simple banner similar to the TUI header so "codex e <prompt>" also shows it.
+        {
+            use chrono::Local;
+            let ts = Local::now().format("[%m-%d_%H%M]");
+            let cwd_display = {
+                let sep = std::path::MAIN_SEPARATOR;
+                if let Some(home) = dirs::home_dir() {
+                    if let Ok(rel) = config.cwd.strip_prefix(home) {
+                        format!("~{sep}{}", rel.display())
+                    } else {
+                        config.cwd.display().to_string()
+                    }
+                } else {
+                    config.cwd.display().to_string()
+                }
+            };
+            println!(">_ {ts} You are using MODDED OpenAI Codex in {cwd_display}\n");
+        }
         codex_ollama::ensure_oss_ready(&config)
             .await
             .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;

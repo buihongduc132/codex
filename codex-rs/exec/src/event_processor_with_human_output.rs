@@ -271,6 +271,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 command,
                 cwd,
                 parsed_cmd: _,
+                timeout_ms: _,
             }) => {
                 self.call_id_to_command.insert(
                     call_id.clone(),

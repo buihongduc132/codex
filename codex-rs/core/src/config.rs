@@ -7,6 +7,7 @@ use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
 use crate::config_types::Verbosity;
+use crate::exec::DEFAULT_TIMEOUT_MS;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
 use crate::model_family::find_family_for_model;
@@ -65,6 +66,9 @@ pub struct Config {
     pub sandbox_policy: SandboxPolicy,
 
     pub shell_environment_policy: ShellEnvironmentPolicy,
+
+    /// Default timeout for `exec` commands (milliseconds) when a tool call does not specify one.
+    pub exec_timeout_ms: u64,
 
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
@@ -408,6 +412,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
 
+    /// Default timeout for exec commands (milliseconds).
+    pub exec_timeout_ms: Option<u64>,
+
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
@@ -672,6 +679,7 @@ impl Config {
             .clone();
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
+        let exec_timeout_ms = cfg.exec_timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
 
         let resolved_cwd = {
             use std::env;
@@ -760,6 +768,7 @@ impl Config {
                 .unwrap_or_else(AskForApproval::default),
             sandbox_policy,
             shell_environment_policy,
+            exec_timeout_ms,
             disable_response_storage: config_profile
                 .disable_response_storage
                 .or(cfg.disable_response_storage)
@@ -1149,6 +1158,7 @@ disable_response_storage = true
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
+                exec_timeout_ms: DEFAULT_TIMEOUT_MS,
                 disable_response_storage: false,
                 user_instructions: None,
                 notify: None,
@@ -1207,6 +1217,7 @@ disable_response_storage = true
             approval_policy: AskForApproval::UnlessTrusted,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_timeout_ms: DEFAULT_TIMEOUT_MS,
             disable_response_storage: false,
             user_instructions: None,
             notify: None,
@@ -1280,6 +1291,7 @@ disable_response_storage = true
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_timeout_ms: DEFAULT_TIMEOUT_MS,
             disable_response_storage: true,
             user_instructions: None,
             notify: None,

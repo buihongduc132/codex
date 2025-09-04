@@ -253,6 +253,10 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_auto_compact_enabled(&mut self, enabled: bool) {
+        self.composer.set_auto_compact_enabled(enabled);
+    }
+
     pub(crate) fn show_ctrl_c_quit_hint(&mut self) {
         self.ctrl_c_quit_hint = true;
         self.composer
@@ -306,6 +310,13 @@ impl BottomPane {
         } else {
             // Hide the status indicator when a task completes, but keep other modal views.
             self.status = None;
+        }
+    }
+
+    /// Set the timeout for the current command in the status indicator.
+    pub fn set_command_timeout(&mut self, timeout_ms: Option<u64>) {
+        if let Some(status) = self.status.as_mut() {
+            status.set_timeout(timeout_ms);
         }
     }
 

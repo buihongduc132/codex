@@ -126,14 +126,28 @@ impl McpConnectionManager {
                 continue;
             }
 
+            // Skip entries without a valid command instead of failing startup.
+            if cfg.command.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                let error = anyhow::anyhow!(
+                    "mcp_servers.{} is missing a 'command' – skipping",
+                    server_name
+                );
+                errors.insert(server_name, error);
+                continue;
+            }
+
+            // Move values into the task explicitly to avoid borrowing issues.
+            let command_str = cfg.command.clone().unwrap();
+            let args_vec = cfg.args.clone();
+            let env_map = cfg.env.clone();
+            let server_name_cloned = server_name.clone();
+
             join_set.spawn(async move {
-                let McpServerConfig { command, args, env } = cfg;
                 let client_res = McpClient::new_stdio_client(
-                    command.into(),
-                    args.into_iter().map(OsString::from).collect(),
-                    env,
-                )
-                .await;
+                    command_str.into(),
+                    args_vec.into_iter().map(OsString::from).collect(),
+                    env_map,
+                ).await;
                 match client_res {
                     Ok(client) => {
                         // Initialize the client.
@@ -142,8 +156,6 @@ impl McpConnectionManager {
                                 experimental: None,
                                 roots: None,
                                 sampling: None,
-                                // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
-                                // indicates this should be an empty object.
                                 elicitation: Some(json!({})),
                             },
                             client_info: Implementation {
@@ -157,13 +169,12 @@ impl McpConnectionManager {
                         let timeout = Some(Duration::from_secs(10));
                         match client
                             .initialize(params, initialize_notification_params, timeout)
-                            .await
-                        {
-                            Ok(_response) => (server_name, Ok(client)),
-                            Err(e) => (server_name, Err(e)),
+                            .await {
+                            Ok(_response) => (server_name_cloned, Ok(client)),
+                            Err(e) => (server_name_cloned, Err(e)),
                         }
                     }
-                    Err(e) => (server_name, Err(e.into())),
+                    Err(e) => (server_name_cloned, Err(e.into())),
                 }
             });
         }

@@ -87,6 +87,7 @@ use uuid::Uuid;
 struct RunningCommand {
     command: Vec<String>,
     parsed_cmd: Vec<ParsedCommand>,
+    timeout_ms: u64,
 }
 
 pub(crate) struct ChatWidget {
@@ -116,6 +117,8 @@ pub(crate) struct ChatWidget {
     last_history_was_exec: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    auto_compact_enabled: bool,
+    pending_user_message: Option<UserMessage>,
 }
 
 struct UserMessage {
@@ -235,6 +238,10 @@ impl ChatWidget {
 
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
+
+        if let Some(msg) = self.pending_user_message.take() {
+            self.submit_user_message(msg);
+        }
     }
 
     fn on_token_count(&mut self, token_usage: TokenUsage) {
@@ -462,6 +469,11 @@ impl ChatWidget {
             Some(rc) => (rc.command, rc.parsed_cmd),
             None => (vec![ev.call_id.clone()], Vec::new()),
         };
+
+        // Clear timeout from status indicator when command ends
+        if self.running_commands.is_empty() {
+            self.bottom_pane.set_command_timeout(None);
+        }
         self.pending_exec_completions.push((
             command,
             parsed,
@@ -541,8 +553,13 @@ impl ChatWidget {
             RunningCommand {
                 command: ev.command.clone(),
                 parsed_cmd: ev.parsed_cmd.clone(),
+                timeout_ms: ev.timeout_ms,
             },
         );
+
+        // Update the status indicator with timeout information
+        self.bottom_pane.set_command_timeout(Some(ev.timeout_ms));
+
         // Accumulate parsed commands into a single active Exec cell so they stack
         match self.active_exec_cell.as_mut() {
             Some(exec) => {
@@ -600,23 +617,27 @@ impl ChatWidget {
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         enhanced_keys_supported: bool,
+        auto_compact_enabled: bool,
     ) -> Self {
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
 
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+        });
+        bottom_pane.set_auto_compact_enabled(auto_compact_enabled);
+
         Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-            }),
+            bottom_pane,
             active_exec_cell: None,
             config: config.clone(),
             initial_user_message: create_initial_user_message(
@@ -636,6 +657,8 @@ impl ChatWidget {
             last_history_was_exec: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
+            auto_compact_enabled,
+            pending_user_message: None,
         }
     }
 
@@ -682,6 +705,8 @@ impl ChatWidget {
             last_history_was_exec: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
+            auto_compact_enabled: false,
+            pending_user_message: None,
         }
     }
 
@@ -736,7 +761,7 @@ impl ChatWidget {
                             self.queued_user_messages.push_back(user_message);
                             self.refresh_queued_user_messages();
                         } else {
-                            self.submit_user_message(user_message);
+                            self.on_user_submit(user_message);
                         }
                     }
                     InputResult::Command(cmd) => {
@@ -913,6 +938,31 @@ impl ChatWidget {
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
 
+    /// Handle a user submission, optionally triggering auto‑compact when the
+    /// remaining model context is 10% or less (90% usage).
+    fn on_user_submit(&mut self, user_message: UserMessage) {
+        if self.auto_compact_enabled
+            && let Some(remaining) = self.percent_remaining()
+            && remaining <= 10
+        {
+            self.pending_user_message = Some(user_message);
+            self.clear_token_usage();
+            self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
+            return;
+        }
+        self.submit_user_message(user_message);
+    }
+
+    fn percent_remaining(&self) -> Option<u8> {
+        let context_window = self.config.model_context_window?;
+        if context_window == 0 {
+            return Some(100);
+        }
+        let used = self.last_token_usage.tokens_in_context_window() as f32;
+        let percent = 100.0f32 - (used / (context_window as f32)) * 100.0;
+        Some(percent.clamp(0.0, 100.0) as u8)
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
         let mut items: Vec<InputItem> = Vec::new();
@@ -1067,6 +1117,7 @@ impl ChatWidget {
             &self.config,
             &self.total_token_usage,
             &self.session_id,
+            self.auto_compact_enabled,
         ));
     }
 
