@@ -188,6 +188,10 @@ pub struct Config {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
+
+    /// Default timeout for exec/tool commands in milliseconds when not
+    /// explicitly provided by the tool call.
+    pub default_exec_timeout_ms: Option<u64>,
 }
 
 impl Config {
@@ -541,6 +545,11 @@ pub struct ToolsToml {
     /// Enable the `view_image` tool that lets the agent attach local images.
     #[serde(default)]
     pub view_image: Option<bool>,
+
+    /// Default timeout for exec/tool commands in milliseconds when not
+    /// provided per-call via the tool arguments.
+    #[serde(default)]
+    pub exec_timeout_ms: Option<u64>,
 }
 
 impl From<ToolsToml> for Tools {
@@ -740,6 +749,9 @@ impl Config {
             .or(cfg.tools.as_ref().and_then(|t| t.view_image))
             .unwrap_or(true);
 
+        // Default exec timeout (tools.exec_timeout_ms)
+        let default_exec_timeout_ms = cfg.tools.as_ref().and_then(|t| t.exec_timeout_ms);
+
         let model = model
             .or(config_profile.model)
             .or(cfg.model)
@@ -849,6 +861,7 @@ impl Config {
                 .unwrap_or(false),
             include_view_image_tool,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            default_exec_timeout_ms,
         };
         Ok(config)
     }

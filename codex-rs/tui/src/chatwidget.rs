@@ -187,10 +187,12 @@ impl ChatWidget {
         let finished = self.stream.apply_final_answer(&message, &sink);
         self.handle_if_stream_finished(finished);
         self.request_redraw();
+        self.update_git_footer_line();
     }
 
     fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
+        self.update_git_footer_line();
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
@@ -240,6 +242,7 @@ impl ChatWidget {
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
         self.request_redraw();
+        self.update_git_footer_line();
     }
 
     fn on_task_complete(&mut self) {
@@ -256,6 +259,35 @@ impl ChatWidget {
 
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
+        self.update_git_footer_line();
+    }
+
+    fn update_git_footer_line(&mut self) {
+        // Build a compact footer with git metadata and cwd basename.
+        let cwd = &self.config.cwd;
+        let cwd_base: String = cwd
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| cwd.to_string_lossy().to_string());
+
+        // Attempt to read branch name from .git/HEAD (no external commands).
+        let branch = codex_core::git_info::get_git_repo_root(cwd).and_then(|root| {
+            let head_path = root.join(".git").join("HEAD");
+            std::fs::read_to_string(&head_path)
+                .ok()
+                .and_then(|s| s.strip_prefix("ref: ").map(|v| v.trim().to_string()))
+                .and_then(|ref_path| ref_path.rsplit('/').next().map(|b| b.to_string()))
+        });
+
+        // Resolve default timeout; falls back to 2000ms if not set.
+        let default_timeout_ms = self.config.default_exec_timeout_ms.unwrap_or(2000);
+
+        let footer = match branch {
+            Some(b) => format!(" {b} • {cwd_base} • timeout: {default_timeout_ms}ms"),
+            None => format!("{cwd_base} • timeout: {default_timeout_ms}ms"),
+        };
+        self.bottom_pane.set_footer_line(footer);
     }
 
     fn on_token_count(&mut self, token_usage: TokenUsage) {

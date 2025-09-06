@@ -12,6 +12,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::prelude::Stylize as _;
 use ratatui::widgets::WidgetRef;
 use std::time::Duration;
 
@@ -64,6 +65,9 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Queued user messages to show under the status indicator.
     queued_user_messages: Vec<String>,
+
+    /// Optional single-line footer always rendered under the composer.
+    footer_line: Option<String>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -96,6 +100,7 @@ impl BottomPane {
             status: None,
             queued_user_messages: Vec::new(),
             esc_backtrack_hint: false,
+            footer_line: None,
         }
     }
 
@@ -104,7 +109,7 @@ impl BottomPane {
         let top_margin = 1;
 
         // Base height depends on whether a modal/overlay is active.
-        let base = match self.active_view.as_ref() {
+        let mut base = match self.active_view.as_ref() {
             Some(view) => view.desired_height(width),
             None => self.composer.desired_height(width).saturating_add(
                 self.status
@@ -112,12 +117,16 @@ impl BottomPane {
                     .map_or(0, |status| status.desired_height(width)),
             ),
         };
+        // Include footer height when present (1 line)
+        if self.footer_line.is_some() {
+            base = base.saturating_add(1);
+        }
         // Account for bottom padding rows. Top spacing is handled in layout().
         base.saturating_add(Self::BOTTOM_PAD_LINES)
             .saturating_add(top_margin)
     }
 
-    fn layout(&self, area: Rect) -> [Rect; 2] {
+    fn layout(&self, area: Rect) -> [Rect; 3] {
         // At small heights, bottom pane takes the entire height.
         let (top_margin, bottom_margin) = if area.height <= BottomPane::BOTTOM_PAD_LINES + 1 {
             (0, 0)
@@ -132,13 +141,20 @@ impl BottomPane {
             height: area.height - top_margin - bottom_margin,
         };
         match self.active_view.as_ref() {
-            Some(_) => [Rect::ZERO, area],
+            Some(_) => [Rect::ZERO, area, Rect::ZERO],
             None => {
                 let status_height = self
                     .status
                     .as_ref()
                     .map_or(0, |status| status.desired_height(area.width));
-                Layout::vertical([Constraint::Max(status_height), Constraint::Min(1)]).areas(area)
+                let footer_h = if self.footer_line.is_some() { 1 } else { 0 };
+                let [top, middle, bottom] = Layout::vertical([
+                    Constraint::Max(status_height),
+                    Constraint::Min(1),
+                    Constraint::Max(footer_h),
+                ])
+                .areas(area);
+                [top, middle, bottom]
             }
         }
     }
@@ -151,7 +167,7 @@ impl BottomPane {
         if self.active_view.is_some() {
             None
         } else {
-            let [_, content] = self.layout(area);
+            let [_, content, _] = self.layout(area);
             self.composer.cursor_pos(content)
         }
     }
@@ -335,6 +351,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Set footer line content (single line) displayed under the composer.
+    pub(crate) fn set_footer_line(&mut self, line: String) {
+        self.footer_line = Some(line);
+        self.request_redraw();
+    }
+
     /// Update custom prompts available for the slash popup.
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
         self.composer.set_custom_prompts(prompts);
@@ -470,7 +492,7 @@ impl BottomPane {
 
 impl WidgetRef for &BottomPane {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let [status_area, content] = self.layout(area);
+        let [status_area, content, footer_area] = self.layout(area);
 
         // When a modal view is active, it owns the whole content area.
         if let Some(view) = &self.active_view {
@@ -484,6 +506,15 @@ impl WidgetRef for &BottomPane {
 
             // Render the composer in the remaining area.
             self.composer.render_ref(content, buf);
+
+            // Render footer if present.
+            if self.footer_line.is_some() && footer_area.height > 0 {
+                use ratatui::text::Line;
+                use ratatui::widgets::Paragraph;
+                let text = self.footer_line.clone().unwrap_or_default();
+                let line = Line::from(text.dim());
+                Paragraph::new(line).render_ref(footer_area, buf);
+            }
         }
     }
 }

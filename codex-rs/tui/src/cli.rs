@@ -82,6 +82,14 @@ pub struct Cli {
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
+    /// Override the built-in system prompt (base instructions).
+    ///
+    /// If the value looks like a path to an existing file, the contents of the
+    /// file are used. Otherwise, the value itself is used verbatim as the
+    /// instructions string.
+    #[arg(long = "experimental-instructions")]
+    pub experimental_instructions: Option<String>,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }

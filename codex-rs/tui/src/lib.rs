@@ -19,6 +19,7 @@ use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::mcp_protocol::AuthMode;
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing::error;
 use tracing_appender::non_blocking;
@@ -117,6 +118,28 @@ pub async fn run_main(
     // canonicalize the cwd
     let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
 
+    // Resolve experimental base instructions if provided via CLI.
+    let base_instructions = if let Some(s) = cli.experimental_instructions.as_deref() {
+        let p = Path::new(s);
+        if p.exists() && p.is_file() {
+            match std::fs::read_to_string(p) {
+                Ok(contents) => Some(contents),
+                Err(e) => {
+                    // Fall back to the raw string when reading fails.
+                    tracing::warn!(
+                        "Failed to read experimental instructions from {}: {e}",
+                        p.display()
+                    );
+                    Some(s.to_string())
+                }
+            }
+        } else {
+            Some(s.to_string())
+        }
+    } else {
+        None
+    };
+
     let overrides = ConfigOverrides {
         model,
         approval_policy,
@@ -125,7 +148,7 @@ pub async fn run_main(
         model_provider: model_provider_override,
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
-        base_instructions: None,
+        base_instructions,
         include_plan_tool: Some(true),
         include_apply_patch_tool: None,
         include_view_image_tool: None,

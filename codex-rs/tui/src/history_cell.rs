@@ -665,11 +665,33 @@ pub(crate) fn new_session_info(
             .unwrap_or(false);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![
+        // Attempt to include build metadata (commit + datetime) for modded builds.
+        let build_commit: &str = option_env!("CODEX_BUILD_COMMIT").unwrap_or("unknown");
+        let build_datetime: &str = option_env!("CODEX_BUILD_DATETIME").unwrap_or("unknown");
+
+        // Best-effort branch detection without invoking external commands: read .git/HEAD
+        let branch_suffix = match codex_core::git_info::get_git_repo_root(&config.cwd) {
+            Some(root) => {
+                let head_path = root.join(".git").join("HEAD");
+                std::fs::read_to_string(&head_path)
+                    .ok()
+                    .and_then(|s| s.strip_prefix("ref: ").map(|v| v.trim().to_string()))
+                    .and_then(|ref_path| ref_path.rsplit('/').next().map(|b| b.to_string()))
+                    .map(|b| format!(" (branch: {b})"))
+            }
+            None => None,
+        };
+
+        let mut header_spans: Vec<Span<'static>> = vec![
             ">_ ".dim(),
+            format!("[MOODED Build: {build_commit} {build_datetime}] ").dim(),
             "You are using OpenAI Codex in".bold(),
             format!(" {cwd_str}").dim(),
-        ]));
+        ];
+        if let Some(sfx) = branch_suffix {
+            header_spans.push(sfx.dim());
+        }
+        lines.push(Line::from(header_spans));
         lines.push(Line::from("".dim()));
         lines.push(Line::from(
             " To get started, describe a task or try one of these commands:".dim(),
