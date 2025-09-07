@@ -764,8 +764,8 @@ impl ChatWidget {
                             self.on_user_submit(user_message);
                         }
                     }
-                    InputResult::Command(cmd) => {
-                        self.dispatch_command(cmd);
+                    InputResult::Command(cmd, arg) => {
+                        self.dispatch_command_with_args(cmd, arg);
                     }
                     InputResult::None => {}
                 }
@@ -788,7 +788,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn dispatch_command(&mut self, cmd: SlashCommand) {
+    fn dispatch_command_with_args(&mut self, cmd: SlashCommand, arg: Option<String>) {
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
             let message = format!(
                 "'/'{}' is disabled while a task is in progress.",
@@ -824,6 +824,153 @@ impl ChatWidget {
                     tracing::error!("failed to logout: {e}");
                 }
                 self.app_event_tx.send(AppEvent::ExitRequest);
+            }
+            SlashCommand::Save => {
+                let name = arg.unwrap_or_default();
+                if name.trim().is_empty() {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /save <name>".to_string(),
+                    ));
+                    self.request_redraw();
+                    return;
+                }
+                let codex_home = self.config.codex_home.clone();
+                // Resolve latest session file path via list_conversations.
+                let tx = self.app_event_tx.clone();
+                let name_clone = name.clone();
+                tokio::spawn(async move {
+                    use codex_core::RolloutRecorder;
+                    let page = RolloutRecorder::list_conversations(&codex_home, 1, None).await;
+                    match page {
+                        Ok(p) => {
+                            if let Some(item) = p.items.first() {
+                                // Update saves.json
+                                let saves_path = codex_home.join("saves.json");
+                                let mut root: serde_json::Value = if saves_path.exists() {
+                                    serde_json::from_str(
+                                        &std::fs::read_to_string(&saves_path).unwrap_or_default(),
+                                    )
+                                    .unwrap_or_else(
+                                        |_| serde_json::json!({"by_name":{},"by_id":{}}),
+                                    )
+                                } else {
+                                    serde_json::json!({"by_name":{},"by_id":{}})
+                                };
+                                let by_name = root["by_name"].as_object_mut().unwrap();
+                                by_name.insert(
+                                    name_clone.clone(),
+                                    serde_json::Value::String(
+                                        item.path.to_string_lossy().to_string(),
+                                    ),
+                                );
+                                // Try to infer id from head meta
+                                if let Some(first) = item.head.first() {
+                                    if let Some(id) = first
+                                        .get("meta")
+                                        .and_then(|m| m.get("id"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        root["by_id"][id] = serde_json::Value::String(
+                                            item.path.to_string_lossy().to_string(),
+                                        );
+                                    }
+                                }
+                                let _ = std::fs::write(
+                                    &saves_path,
+                                    serde_json::to_string_pretty(&root).unwrap(),
+                                );
+                                tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                    crate::history_cell::new_user_approval_decision(vec![
+                                        ratatui::text::Line::from(format!(
+                                            "Saved '{}' -> {}",
+                                            name_clone,
+                                            item.path.display()
+                                        )),
+                                    ]),
+                                )));
+                            } else {
+                                tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                    crate::history_cell::new_user_approval_decision(vec![
+                                        ratatui::text::Line::from("No conversations found to save"),
+                                    ]),
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                crate::history_cell::new_user_approval_decision(vec![
+                                    ratatui::text::Line::from(format!(
+                                        "Failed to list conversations: {e}",
+                                    )),
+                                ]),
+                            )));
+                        }
+                    }
+                });
+            }
+            SlashCommand::Load => {
+                let key = arg.unwrap_or_default();
+                if key.trim().is_empty() {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /load <name-or-id>".to_string(),
+                    ));
+                    self.request_redraw();
+                    return;
+                }
+                let codex_home = self.config.codex_home.clone();
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let saves_path = codex_home.join("saves.json");
+                    if !saves_path.exists() {
+                        tx.send(AppEvent::InsertHistoryCell(Box::new(
+                            crate::history_cell::new_user_approval_decision(vec![
+                                ratatui::text::Line::from(
+                                    "No saves.json present; use /save <name> first",
+                                ),
+                            ]),
+                        )));
+                        return;
+                    }
+                    let root: serde_json::Value = match serde_json::from_str(
+                        &std::fs::read_to_string(&saves_path).unwrap_or_default(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                crate::history_cell::new_user_approval_decision(vec![
+                                    ratatui::text::Line::from(
+                                        format!("Failed to read saves: {e}",),
+                                    ),
+                                ]),
+                            )));
+                            return;
+                        }
+                    };
+                    let by_name = root
+                        .get("by_name")
+                        .and_then(|v| v.as_object())
+                        .cloned()
+                        .unwrap_or_default();
+                    let by_id = root
+                        .get("by_id")
+                        .and_then(|v| v.as_object())
+                        .cloned()
+                        .unwrap_or_default();
+                    let val = by_name
+                        .get(&key)
+                        .or_else(|| by_id.get(&key))
+                        .and_then(|v| v.as_str())
+                        .map(std::path::PathBuf::from);
+                    if let Some(path) = val {
+                        tx.send(AppEvent::LoadPath(path));
+                    } else {
+                        tx.send(AppEvent::InsertHistoryCell(Box::new(
+                            crate::history_cell::new_user_approval_decision(vec![
+                                ratatui::text::Line::from(format!("Save not found: {key}",)),
+                            ]),
+                        )));
+                    }
+                });
             }
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
@@ -890,6 +1037,10 @@ impl ChatWidget {
                 }));
             }
         }
+    }
+
+    fn dispatch_command(&mut self, cmd: SlashCommand) {
+        self.dispatch_command_with_args(cmd, None);
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {

@@ -53,7 +53,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 #[derive(Debug, PartialEq)]
 pub enum InputResult {
     Submitted(String),
-    Command(SlashCommand),
+    Command(SlashCommand, Option<String>),
     None,
 }
 
@@ -432,6 +432,13 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
+                    let current_line = self
+                        .textarea
+                        .text()
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
                     // Clear textarea so no residual text remains.
                     self.textarea.set_text("");
                     // Capture any needed data from popup before clearing it.
@@ -446,7 +453,22 @@ impl ChatComposer {
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
-                            return (InputResult::Command(cmd), true);
+                            // Extract argument text after the command token.
+                            // Expect forms: "/cmd", "/cmd arg...". Keep raw arg string.
+                            let arg = {
+                                let token = format!("/{}", cmd.command());
+                                if let Some(rest) = current_line.strip_prefix(&token) {
+                                    let s = rest.trim();
+                                    if s.is_empty() {
+                                        None
+                                    } else {
+                                        Some(s.to_string())
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+                            return (InputResult::Command(cmd, arg), true);
                         }
                         CommandItem::UserPrompt(_) => {
                             if let Some(contents) = prompt_content {
@@ -1711,7 +1733,7 @@ mod tests {
         // When a slash command is dispatched, the composer should return a
         // Command result (not submit literal text) and clear its textarea.
         match result {
-            InputResult::Command(cmd) => {
+            InputResult::Command(cmd, _) => {
                 assert_eq!(cmd.command(), "init");
             }
             InputResult::Submitted(text) => {
@@ -1769,7 +1791,7 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::Command(cmd) => {
+            InputResult::Command(cmd, _) => {
                 assert_eq!(cmd.command(), "mention");
             }
             InputResult::Submitted(text) => {
