@@ -13,6 +13,30 @@ pub struct Cli {
     #[arg(long = "image", short = 'i', value_name = "FILE", value_delimiter = ',', num_args = 1..)]
     pub images: Vec<PathBuf>,
 
+    /// Open an interactive picker to resume a previous session recorded on disk
+    /// instead of starting a new one.
+    ///
+    /// Notes:
+    /// - Mutually exclusive with `--continue`.
+    /// - The picker displays recent sessions and a preview of the first real user
+    ///   message to help you select the right one.
+    #[arg(long = "resume", default_value_t = false, conflicts_with = "continue")]
+    pub resume: bool,
+
+    /// Continue the most recent conversation without showing the picker.
+    ///
+    /// Notes:
+    /// - Mutually exclusive with `--resume`.
+    /// - If no recorded sessions are found, this behaves like starting fresh.
+    /// - Equivalent to picking the newest item in the resume picker.
+    #[arg(
+        id = "continue",
+        long = "continue",
+        default_value_t = false,
+        conflicts_with = "resume"
+    )]
+    pub r#continue: bool,
+
     /// Model the agent should use.
     #[arg(long, short = 'm')]
     pub model: Option<String>,
@@ -40,10 +64,6 @@ pub struct Cli {
     #[arg(long = "full-auto", default_value_t = false)]
     pub full_auto: bool,
 
-    /// Automatically run /compact when the remaining model context is 10% or less.
-    #[arg(long = "auto-compact", default_value_t = true)]
-    pub auto_compact: bool,
-
     /// Skip all confirmation prompts and execute commands without sandboxing.
     /// EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed.
     #[arg(
@@ -62,19 +82,18 @@ pub struct Cli {
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
+    /// Load a specific conversation from a rollout path.
+    #[arg(long = "load-path", value_name = "FILE")]
+    pub load_path: Option<PathBuf>,
+
+    /// Override the built-in system prompt (base instructions).
+    ///
+    /// If the value looks like a path to an existing file, the contents of the
+    /// file are used. Otherwise, the value itself is used verbatim as the
+    /// instructions string.
+    #[arg(long = "experimental-instructions")]
+    pub experimental_instructions: Option<String>,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[test]
-    fn auto_compact_defaults_true() {
-        // Parse with no flags; ensure default true
-        let cli = Cli::parse_from(["codex-tui"]);
-        assert!(cli.auto_compact, "--auto-compact should default to true");
-    }
 }

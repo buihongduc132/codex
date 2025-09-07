@@ -1,0 +1,4 @@
+- hosts: 'targets:docker'
+  gather_facts: true
+  roles:
+    - codex

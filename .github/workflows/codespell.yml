@@ -12,6 +12,11 @@ permissions:
   contents: read
 
 jobs:
+  _disabled_notice:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Codespell temporarily disabled via toggle; do not remove."
   codespell:
     name: Check for spelling errors
     runs-on: ubuntu-latest

@@ -1,0 +1,21 @@
+approval_policy = "{{ codex_prod_flags.approval }}"
+sandbox_mode    = "{{ codex_prod_flags.sandbox }}"
+
+[projects]
+{% for p in trusted_projects %}
+[projects."{{ p.path }}"]
+trust_level = "{{ p.trust_level }}"
+{% endfor %}
+
+{% if context7_enabled %}
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp", "--api-key", "{{ context7_api_key }}"]
+{% endif %}
+
+{% if playwright_enabled %}
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+{% endif %}
+

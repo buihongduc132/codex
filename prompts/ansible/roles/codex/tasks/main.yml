@@ -1,0 +1,86 @@
+---
+- name: Ensure directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ ansible_env.HOME }}/bin"
+    - "{{ ansible_env.HOME }}/.local/bin"
+    - "{{ codex_prod_home }}"
+    - "{{ codex_dev_home }}"
+
+- name: Deploy qox wrapper (prod)
+  copy:
+    src: "{{ playbook_dir }}/../../stow/codex/bin/qox"
+    dest: "{{ ansible_env.HOME }}/bin/qox"
+    mode: "0755"
+
+- name: Deploy qoo wrapper (dev)
+  copy:
+    src: "{{ playbook_dir }}/../../stow/codex-dev/.local/bin/qoo"
+    dest: "{{ ansible_env.HOME }}/.local/bin/qoo"
+    mode: "0755"
+
+- name: Optionally install prod codex binary from URL
+  get_url:
+    url: "{{ codex_prod_bin_url }}"
+    dest: "/usr/local/bin/codex"
+    mode: "0755"
+  when: codex_prod_bin_url | length > 0
+  become: true
+
+- name: Optionally upload dev codex binary
+  copy:
+    src: "{{ codex_dev_binary_src }}"
+    dest: "{{ codex_dev_binary_dst }}"
+    mode: "0755"
+  when: codex_dev_binary_src is file
+
+- name: Render prod config (~/.codex/config.toml)
+  template:
+    src: codex_config.toml.j2
+    dest: "{{ codex_prod_home }}/config.toml"
+    mode: "0644"
+
+- name: Render dev config (~/.qoo/config.toml)
+  template:
+    src: qoo_config.toml.j2
+    dest: "{{ codex_dev_home }}/config.toml"
+    mode: "0644"
+
+- name: "Localhost: link ~/.qoo to prompts/config/qoo"
+  file:
+    path: "{{ ansible_env.HOME }}/.qoo"
+    src: "{{ playbook_dir }}/../../config/qoo"
+    state: link
+  when:
+    - deploy_from_prompts | bool
+    - ansible_connection is defined and ansible_connection == 'local'
+
+- name: "Localhost: link repo ./.qoo to prompts/config/qoo"
+  file:
+    path: "{{ playbook_dir }}/../../.qoo"
+    src: "{{ playbook_dir }}/../../config/qoo"
+    state: link
+  when:
+    - deploy_from_prompts | bool
+    - ansible_connection is defined and ansible_connection == 'local'
+
+- name: "Remote: copy prompts/config/qoo into ~/.qoo"
+  copy:
+    src: "{{ playbook_dir }}/../../config/qoo/"
+    dest: "{{ codex_dev_home }}/"
+    mode: "0755"
+  when:
+    - deploy_from_prompts | bool
+    - ansible_connection is not defined or ansible_connection != 'local'
+
+- name: "Remote: copy prompts/config/codex into ~/.codex"
+  copy:
+    src: "{{ playbook_dir }}/../../config/codex/"
+    dest: "{{ codex_prod_home }}/"
+    mode: "0755"
+  when:
+    - deploy_from_prompts | bool
+    - ansible_connection is not defined or ansible_connection != 'local'
