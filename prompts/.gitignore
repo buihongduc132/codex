@@ -1,0 +1,9 @@
+backups/
+ansible/group_vars/*secrets*.yml
+*.retry
+*.log
+*.tar.gz
+.env.local
+# Local qoo runtime/config (do not commit machine-specific data)
+config/qoo/
+stow/

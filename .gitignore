@@ -81,3 +81,10 @@ CHANGELOG.ignore.md
 # nix related
 .direnv
 .envrc
+_STATE.md
+# Local Codex runtime state
+tmp-codex-home/
+.qoo
+
+# Rust insta snapshot review files
+**/*.snap.new
