@@ -21,6 +21,14 @@ fn main() -> anyhow::Result<()> {
             .config_overrides
             .raw_overrides
             .splice(0..0, top_cli.config_overrides.raw_overrides);
+
+        // Non‑interactive status mode: treat a literal positional "status"
+        // as a command to print the effective configuration and exit.
+        if matches!(inner.prompt.as_deref(), Some("status")) {
+            let s = codex_tui::status_string(&inner, codex_linux_sandbox_exe)?;
+            println!("{s}");
+            return Ok(());
+        }
         let usage = run_main(inner, codex_linux_sandbox_exe).await?;
         if !usage.is_zero() {
             println!("{}", codex_core::protocol::FinalOutput::from(usage));

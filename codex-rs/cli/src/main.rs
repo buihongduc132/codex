@@ -73,6 +73,12 @@ enum Subcommand {
     #[clap(visible_alias = "a")]
     Apply(ApplyCommand),
 
+    /// Save a conversation under a friendly name for later loading.
+    Save(SaveCommand),
+
+    /// Load a saved conversation by name or session id.
+    Load(LoadCommand),
+
     /// Internal: generate TypeScript protocol bindings.
     #[clap(hide = true)]
     GenerateTs(GenerateTsCommand),
@@ -133,6 +139,24 @@ struct GenerateTsCommand {
     /// Optional path to the Prettier executable to format generated files
     #[arg(short = 'p', long = "prettier", value_name = "PRETTIER_BIN")]
     prettier: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct SaveCommand {
+    /// Name to save the conversation as.
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    /// Session id to save. If omitted, the latest conversation is used.
+    #[arg(long = "id", value_name = "UUID")]
+    id: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct LoadCommand {
+    /// Name or session id to load.
+    #[arg(value_name = "NAME_OR_ID")]
+    key: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -209,6 +233,12 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             prepend_config_flags(&mut apply_cli.config_overrides, cli.config_overrides);
             run_apply_command(apply_cli, None).await?;
         }
+        Some(Subcommand::Save(cmd)) => {
+            handle_save(cmd).await?;
+        }
+        Some(Subcommand::Load(cmd)) => {
+            handle_load(cmd).await?;
+        }
         Some(Subcommand::GenerateTs(gen_cli)) => {
             codex_protocol_ts::generate_ts(&gen_cli.out_dir, gen_cli.prettier.as_deref())?;
         }
@@ -232,4 +262,103 @@ fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
     let name = "codex";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
+}
+
+async fn handle_save(cmd: SaveCommand) -> anyhow::Result<()> {
+    use codex_core::RolloutRecorder;
+    use codex_core::config::find_codex_home;
+
+    let codex_home = find_codex_home()?;
+    // Resolve target path by id or by selecting latest
+    let target_path = if let Some(id_prefix) = cmd.id.as_deref() {
+        // Scan a large page and match by session id prefix from the meta head.
+        let page = RolloutRecorder::list_conversations(&codex_home, 10_000, None).await?;
+        let mut found: Option<std::path::PathBuf> = None;
+        for it in &page.items {
+            if let Some(first) = it.head.first() {
+                let sid = first
+                    .get("meta")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if sid.starts_with(id_prefix) || sid == id_prefix {
+                    found = Some(it.path.clone());
+                    break;
+                }
+            }
+        }
+        found.ok_or_else(|| anyhow::anyhow!("session id not found"))?
+    } else {
+        let page = RolloutRecorder::list_conversations(&codex_home, 1, None).await?;
+        page.items
+            .first()
+            .map(|it| it.path.clone())
+            .ok_or_else(|| anyhow::anyhow!("no conversations found"))?
+    };
+
+    // Write/update saves index
+    let saves_path = codex_home.join("saves.json");
+    let mut root: serde_json::Value = if saves_path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&saves_path)?)
+            .unwrap_or_else(|_| serde_json::json!({"by_name":{}, "by_id":{}}))
+    } else {
+        serde_json::json!({"by_name":{}, "by_id":{}})
+    };
+    // Insert name and id mapping
+    let by_name = root["by_name"].as_object_mut().unwrap();
+    by_name.insert(
+        cmd.name.clone(),
+        serde_json::Value::String(target_path.to_string_lossy().to_string()),
+    );
+    // Best-effort id: infer from filename
+    if let Some(file) = target_path.file_name().and_then(|s| s.to_str()) {
+        if let Some(id) = file
+            .split('-')
+            .last()
+            .and_then(|s| s.strip_suffix(".jsonl"))
+        {
+            root["by_id"][id] =
+                serde_json::Value::String(target_path.to_string_lossy().to_string());
+        }
+    }
+    std::fs::write(saves_path, serde_json::to_string_pretty(&root)?)?;
+    println!("saved `{}` -> {}", cmd.name, target_path.display());
+    Ok(())
+}
+
+async fn handle_load(cmd: LoadCommand) -> anyhow::Result<()> {
+    use codex_core::config::find_codex_home;
+
+    let codex_home = find_codex_home()?;
+    let saves_path = codex_home.join("saves.json");
+    let path = if saves_path.exists() {
+        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&saves_path)?)?;
+        let by_name = root
+            .get("by_name")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let by_id = root
+            .get("by_id")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        by_name
+            .get(&cmd.key)
+            .or_else(|| by_id.get(&cmd.key))
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("save not found: {}", cmd.key))?
+    } else {
+        anyhow::bail!("no saves.json present; use `codex save <name>` first");
+    };
+
+    // Build a TUI CLI that loads the specified path.
+    let mut tui_cli = TuiCli::parse_from(["codex", "--load-path", &path.to_string_lossy()]);
+    // Forward any root-level overrides later if needed.
+    let usage = codex_tui::run_main(tui_cli, None).await?;
+    if !usage.is_zero() {
+        println!("{}", codex_core::protocol::FinalOutput::from(usage));
+    }
+    Ok(())
 }
