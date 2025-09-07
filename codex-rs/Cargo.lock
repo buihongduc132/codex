@@ -704,6 +704,7 @@ dependencies = [
  "codex-core",
  "codex-protocol",
  "serde",
+ "tempfile",
  "toml 0.9.5",
 ]
 
