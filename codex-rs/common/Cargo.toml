@@ -18,3 +18,6 @@ toml = { version = "0.9", optional = true }
 cli = ["clap", "serde", "toml"]
 elapsed = []
 sandbox_summary = []
+
+[dev-dependencies]
+tempfile = "3"
