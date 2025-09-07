@@ -1,6 +1,6 @@
 <h1 align="center">OpenAI Codex CLI</h1>
 
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install codex</code></p>
+<p align="center"><strong>Install</strong>: download the right binary for your OS/arch</p>
 
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, see <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
@@ -14,37 +14,49 @@
 
 ### Installing and running Codex CLI
 
-Install globally with your preferred package manager. If you use npm:
+Install directly from this fork’s GitHub Release binary. No credentials required.
+
+Option A — one‑liner install script (recommended):
 
 ```shell
-npm install -g @openai/codex
+REPO="buihongduc132/codex" bash -c "$(curl -fsSL https://raw.githubusercontent.com/buihongduc132/codex/main/scripts/install.sh)"
 ```
 
-Alternatively, if you use Homebrew:
+- To pin a version (tag), set `VERSION`, e.g.:
 
 ```shell
-brew install codex
+REPO="buihongduc132/codex" VERSION="v0.1.0" bash -c "$(curl -fsSL https://raw.githubusercontent.com/buihongduc132/codex/main/scripts/install.sh)"
 ```
 
-Then simply run `codex` to get started:
+Option B — manual download:
+
+1) Go to this fork’s Releases page https://github.com/buihongduc132/codex/releases and download the appropriate archive for your platform, named like:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-gnu.tar.gz` (or `-musl` if you built musl)
+  - arm64: `codex-aarch64-unknown-linux-gnu.tar.gz` (or `-musl` if you built musl)
+
+2) Extract and move the `codex` binary somewhere on your `PATH`, e.g. `~/.local/bin`.
+
+Then run `codex` to get started:
 
 ```shell
 codex
 ```
 
 <details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+<summary>Maintainers: building the release archive locally</summary>
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+Use the helper script to build and package an archive for your host platform:
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+```shell
+scripts/build_release.sh
+```
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+This produces `dist/codex-<target-triple>.tar.gz` and a `.sha256` checksum. Upload the tarball to this fork’s Release as an asset. The install script will fetch from `releases/latest` by default, or a specific tag if `VERSION` is set.
 
 </details>
 
@@ -99,4 +111,3 @@ Codex CLI supports a rich set of configuration options, with preferences stored 
 ## License
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
-
