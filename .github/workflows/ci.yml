@@ -5,6 +5,11 @@ on:
   push: { branches: [main] }
 
 jobs:
+  _disabled_notice:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI temporarily disabled via toggle; do not remove workflow."
   build-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
