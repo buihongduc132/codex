@@ -198,12 +198,23 @@ impl PasteBurst {
 
     /// Before applying modified/non-char input: flush buffered burst immediately.
     pub fn flush_before_modified_input(&mut self) -> Option<String> {
-        if self.is_active() {
+        if self.is_active_internal() {
+            // We are actively buffering a burst (or have a non-empty buffer):
+            // emit the buffered contents as a single paste string.
             self.active = false;
-            Some(std::mem::take(&mut self.buffer))
-        } else {
-            None
+            return Some(std::mem::take(&mut self.buffer));
         }
+
+        // If we only held a single fast first-char (to decide whether a paste
+        // was starting) but no burst actually formed yet, flush that held char
+        // now so subsequent non-char inputs (e.g., Backspace from a text
+        // expander like espanso) operate on the intended visible character.
+        if let Some((ch, _at)) = self.pending_first_char.take() {
+            self.clear_window_after_non_char();
+            return Some(ch.to_string());
+        }
+
+        None
     }
 
     /// Clear only the timing window and any pending first-char.
