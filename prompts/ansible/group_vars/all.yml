@@ -1,0 +1,29 @@
+# Global defaults for Codex deployment
+
+codex_prod_flags:
+  approval: "never"
+  sandbox: "danger-full-access"
+
+# Optional: provide a prod codex binary URL or skip if already installed
+codex_prod_bin_url: ""
+
+# Dev binary (controller-local path) to upload to target for qoo
+codex_dev_binary_src: "/home/bhd/Documents/Projects/bhd/qox/codex-rs/target/debug/codex"
+codex_dev_binary_dst: "{{ ansible_env.HOME }}/.local/bin/codex-dev"
+
+# Configs
+codex_prod_home: "{{ ansible_env.HOME }}/.codex"
+codex_dev_home:  "{{ ansible_env.HOME }}/.qoo"
+
+# MCP servers (optional). If left empty, that MCP server block is omitted.
+context7_enabled: true
+context7_api_key: "REPLACE_WITH_CONTEXT7_API_KEY"
+playwright_enabled: true
+
+# Project trust entries
+trusted_projects:
+  - path: "{{ ansible_env.HOME }}"
+    trust_level: "trusted"
+
+# Use configs tracked in this repo (prompts/config/*) as the source of truth
+deploy_from_prompts: true
