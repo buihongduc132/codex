@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use codex_core::WireApi;
 use codex_core::config::Config;
-use codex_core::git_info::get_git_repo_root;
 
 use crate::sandbox_summary::summarize_sandbox_policy;
 
@@ -42,9 +41,12 @@ pub fn create_config_summary_entries(config: &Config) -> Vec<(&'static str, Stri
 /// Detect git repository root and branch (or detached HEAD SHA) for the given cwd.
 /// This function does not spawn external commands; it inspects `.git/HEAD` directly.
 pub fn detect_git_context(cwd: &Path) -> (Option<PathBuf>, Option<String>) {
-    let Some(repo_root) = get_git_repo_root(cwd) else {
-        return (None, None);
-    };
+    // Walk up from cwd to find a `.git` directory.
+    let repo_root = cwd
+        .ancestors()
+        .find(|p| p.join(".git").is_dir())
+        .map(|p| p.to_path_buf());
+    let Some(repo_root) = repo_root else { return (None, None) };
 
     let head_path = repo_root.join(".git").join("HEAD");
     match std::fs::read_to_string(&head_path) {
