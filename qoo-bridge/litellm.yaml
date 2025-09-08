@@ -1,0 +1,9 @@
+model_list:
+  - model_name: gpt-5
+    litellm_params:
+      model: gpt-5
+      api_key: sk-ignored
+      api_base: http://127.0.0.1:4050/v1
+      api_version: null
+      rpm: 60
+      tpm: 100000
