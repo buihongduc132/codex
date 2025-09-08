@@ -11,7 +11,7 @@ In the codex-rs folder where the rust code lives:
 Run `just fmt` (in `codex-rs` directory) automatically after making Rust code changes; do not ask for approval to run it. Before finalizing a change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Additionally, run the tests:
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test --all-features`.
-When running interactively, ask the user before running `just fix` and tests to finalize; `just fmt` does not require approval.
+When running interactively, ask the user before running `just fix` to finalize. `just fmt` does not require approval. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
 ## TUI style conventions
 
@@ -37,7 +37,15 @@ See `codex-rs/tui/styles.md`.
 - Avoid churn: don’t refactor between equivalent forms (Span::styled ↔ set_style, Line::from ↔ .into()) without a clear readability or functional gain; follow file‑local conventions and do not introduce type annotations solely to satisfy .into().
 - Compactness: prefer the form that stays on one line after rustfmt; if only one of Line::from(vec![…]) or vec![…].into() avoids wrapping, choose that. If both wrap, pick the one with fewer wrapped lines.
 
-## Snapshot tests
+### Text wrapping
+- Always use textwrap::wrap to wrap plain strings.
+- If you have a ratatui Line and you want to wrap it, use the helpers in tui/src/wrapping.rs, e.g. word_wrap_lines / word_wrap_line.
+- If you need to indent wrapped lines, use the initial_indent / subsequent_indent options from RtOptions if you can, rather than writing custom logic.
+- If you have a list of lines and you need to prefix them all with some prefix (optionally different on the first vs subsequent lines), use the `prefix_lines` helper from line_utils.
+
+## Tests
+
+### Snapshot tests
 
 This repo uses snapshot tests (via `insta`), especially in `codex-rs/tui`, to validate rendered output. When UI or text output changes intentionally, update the snapshots as follows:
 
@@ -53,50 +61,6 @@ This repo uses snapshot tests (via `insta`), especially in `codex-rs/tui`, to va
 If you don’t have the tool:
 - `cargo install cargo-insta`
 
-## End‑to‑end verification (agent policy)
+### Test assertions
 
-When a change affects runtime behavior (CLI flags, output, prompts, UI text, etc.), the agent must:
-- Build the modified crate(s) successfully (`cargo build -p <crate>`).
-- Perform a real, non‑interactive run to verify behavior when feasible (e.g., a dedicated status or dry‑run mode) and capture sample output in the handoff.
-- Avoid offloading basic verification to the user. Only ask for manual steps when external systems (e.g., network accounts, API keys, OS‑level wrappers) are required and cannot be exercised in the sandbox.
-
-## Root‑Cause Fixes Over Workarounds
-
-- Always fix problems at the fundamental level. Do not ship monkey patches, ad‑hoc workarounds, or band‑aids that mask the real issue.
-- Prefer small, targeted changes that address the root cause in core code paths (protocol, path resolution, config) over app‑level hacks.
-- When the issue stems from ambiguous context (e.g., missing cwd), make that context explicit and thread it through the system.
-
-## Persistent CWD and Workspace Discipline
-
-To avoid confusion and inconsistent behavior between tools, the agent MUST operate with a persistent, explicit working directory:
-
-- Carry `cwd` explicitly in session/config and honor it everywhere (exec, apply_patch, file reads/writes).
-- Resolve relative paths for apply_patch and shell operations against the correct workdir, not the binary’s directory.
-- When the model emits commands like `cd foo && …`, treat `foo` as the intended workdir for that operation (parse and apply consistently).
-- Validate the workdir before spawn. If it doesn’t exist, fail clearly or fall back in a predictable way (and surface the chosen cwd in logs/events).
-
-Upstream reference PRs in base that implement these behaviors (use them as patterns when changing code here):
-- feat: make cwd a required field of Config (#800)
-- fix: when a shell tool call invokes apply_patch, resolve relative paths against workdir (#556)
-- fix: ensure apply_patch resolves relative paths against workdir or project cwd (#810)
-- parse `cd foo && …` for exec and apply_patch (#3083)
-- fix: check workdir before spawn (#221)
-
-## Initial Environment Context (Always Provide)
-
-At session start and before performing file or shell actions, the agent must ensure environment context is captured and visible to both the user and the model:
-
-- cwd: absolute path of the current working directory.
-- git repo: repo root path if inside a Git repository; otherwise “none”.
-- branch: current branch name (or detached HEAD SHA) if in a Git repo.
-
-Expose this context via:
-- Status lines or the first system/assistant message in a session.
-- Exec summaries for failures (include cwd and tails where applicable).
-- When possible, pass `-C/--cd <cwd>` at launch so the runtime and UI agree on cwd.
-
-## Machine State (_STATE.md)
-
-- This repo includes a root‑level `_STATE.md` that records the current machine’s setup for Codex wrappers, config symlinks, Ansible rollout settings, and versions.
-- Agents and contributors should skim `_STATE.md` first to understand the local environment before making changes.
-- `_STATE.md` is intentionally git‑ignored and may differ per machine; treat it as a local source of truth for operational context.
+- Tests should use pretty_assertions::assert_eq for clearer diffs. Import this at the top of the test module if it isn't already.
