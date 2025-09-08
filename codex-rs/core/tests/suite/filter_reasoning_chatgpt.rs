@@ -1,8 +1,8 @@
-use codex_core::built_in_model_providers;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
 use codex_core::WireApi;
+use codex_core::built_in_model_providers;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
@@ -47,7 +47,9 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("\"text\":\"hello\"") && !body.contains("\"text\":\"again\"")
     };
-    Mock::given(method("POST")).and(path("/v1/responses")).and(first_matcher)
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(first_matcher)
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -66,7 +68,9 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("\"text\":\"again\"")
     };
-    Mock::given(method("POST")).and(path("/v1/responses")).and(second_matcher)
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(second_matcher)
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -90,7 +94,10 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
 
     let conversation_manager =
         ConversationManager::with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let NewConversation { conversation: codex, .. } = conversation_manager
+    let NewConversation {
+        conversation: codex,
+        ..
+    } = conversation_manager
         .new_conversation(config)
         .await
         .expect("create new conversation");
@@ -98,7 +105,9 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
     // 4) Turn 1: send a user message; the mock streams a Reasoning item.
     codex
         .submit(codex_core::protocol::Op::UserInput {
-            items: vec![InputItem::Text { text: "hello".into() }],
+            items: vec![InputItem::Text {
+                text: "hello".into(),
+            }],
         })
         .await
         .unwrap();
@@ -107,7 +116,9 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
     // 5) Turn 2: send another user message.
     codex
         .submit(codex_core::protocol::Op::UserInput {
-            items: vec![InputItem::Text { text: "again".into() }],
+            items: vec![InputItem::Text {
+                text: "again".into(),
+            }],
         })
         .await
         .unwrap();
@@ -123,9 +134,9 @@ async fn chatgpt_store_false_filters_reasoning_from_next_turn() {
         .cloned()
         .expect("second request missing input array");
 
-    let has_reasoning = input.iter().any(|item| {
-        item.get("type").and_then(|t| t.as_str()) == Some("reasoning")
-    });
+    let has_reasoning = input
+        .iter()
+        .any(|item| item.get("type").and_then(|t| t.as_str()) == Some("reasoning"));
     assert!(
         !has_reasoning,
         "second request should not include reasoning items when store=false + ChatGPT auth"

@@ -102,6 +102,14 @@ impl StatusIndicatorWidget {
     /// Set the timeout for the current command.
     pub(crate) fn set_timeout(&mut self, timeout_ms: Option<u64>) {
         self.timeout_ms = timeout_ms;
+        // When a timeout is set, treat this as the start of a new command so
+        // the elapsed time reflects the actual command runtime rather than the
+        // overall task duration. Clear it when no timeout is present.
+        if self.timeout_ms.is_some() {
+            self.command_start_time = Some(Instant::now());
+        } else {
+            self.command_start_time = None;
+        }
         self.frame_requester.schedule_frame();
     }
 }

@@ -88,9 +88,8 @@ tmp-codex-home/
 
 # Rust insta snapshot review files
 **/*.snap.new
-# Local qoo-bridge runtime artifacts (ignored)
-/qoo-bridge/.venv/
-/qoo-bridge/*.pid
+# Ignore external qoo-bridge folder if present locally
+/qoo-bridge/
 
 # Python virtualenvs and caches
 lan-chatgpt-proxy/.venv/
@@ -98,4 +97,3 @@ lan-chatgpt-proxy/__pycache__/
 qoo-bridge/__pycache__/
 **/__pycache__/
 *.pyc
-

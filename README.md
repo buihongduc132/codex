@@ -81,6 +81,34 @@ Codex CLI supports a rich set of configuration options, with preferences stored 
 
 ---
 
+### Aliases & Profiles
+
+- `codex` – The original, official CLI binary and defaults.
+- `qox` – Our custom Codex profiles/settings (e.g., under `prompts/config/codex`).
+- `qoo` – Our dev build used from this repo (or a previous build artifact).
+- `qol` / `qoo-lan` – Client profile that talks to the LAN bridge; requires the bridge running on a host in your network and pairing with its components.
+
+LAN usage (client profile example):
+
+```
+[model_providers.lan]
+name = "LAN ChatGPT Proxy"
+base_url = "http://<BRIDGE_HOST>:4050/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[profiles.qoo-lan]
+model = "local_md"        # bridge maps to gpt-5
+model_provider = "lan"
+approval_policy = "never"
+```
+
+Run: `qoo --profile qoo-lan e "..."` to target the LAN bridge.
+
+Note: The LAN bridge (qoo-bridge) lives in a separate repository to avoid ambiguity here. Clone and run it separately (manage with PM2 if desired) and point `qoo-lan` to it.
+
+---
+
 ### Docs & FAQ
 
 - [**Getting started**](./docs/getting-started.md)

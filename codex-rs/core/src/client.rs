@@ -190,16 +190,17 @@ impl ModelClient {
         // history for this wire path. Message items already have their `id`
         // cleared when recorded in history.
         let input_with_instructions = prompt.get_formatted_input();
-        let input_for_request: Vec<codex_protocol::models::ResponseItem> = if auth_mode == Some(AuthMode::ChatGPT) && !store {
-            input_with_instructions
-                .into_iter()
-                .filter(|item| {
-                    !matches!(item, codex_protocol::models::ResponseItem::Reasoning { .. })
-                })
-                .collect()
-        } else {
-            input_with_instructions
-        };
+        let input_for_request: Vec<codex_protocol::models::ResponseItem> =
+            if auth_mode == Some(AuthMode::ChatGPT) && !store {
+                input_with_instructions
+                    .into_iter()
+                    .filter(|item| {
+                        !matches!(item, codex_protocol::models::ResponseItem::Reasoning { .. })
+                    })
+                    .collect()
+            } else {
+                input_with_instructions
+            };
 
         // Only include `text.verbosity` for GPT-5 family models
         let text = if self.config.model_family.family == "gpt-5" {

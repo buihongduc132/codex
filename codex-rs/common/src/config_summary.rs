@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use codex_core::WireApi;
 use codex_core::config::Config;
@@ -46,7 +47,9 @@ pub fn detect_git_context(cwd: &Path) -> (Option<PathBuf>, Option<String>) {
         .ancestors()
         .find(|p| p.join(".git").is_dir())
         .map(|p| p.to_path_buf());
-    let Some(repo_root) = repo_root else { return (None, None) };
+    let Some(repo_root) = repo_root else {
+        return (None, None);
+    };
 
     let head_path = repo_root.join(".git").join("HEAD");
     match std::fs::read_to_string(&head_path) {

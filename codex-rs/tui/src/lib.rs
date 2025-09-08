@@ -217,7 +217,8 @@ pub fn status_string(
     };
 
     // Prompts
-    const INIT_PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
+    const INIT_PROMPT_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
 
     let provider_disp = if config.model_provider_id.eq_ignore_ascii_case("openai") {
         "OpenAI".to_string()
@@ -255,9 +256,7 @@ pub fn status_string(
             }
             match auth.openai_api_key.as_deref() {
                 Some(key) if !key.is_empty() => {
-                    out.push_str(
-                        "  • Using API key. Run codex login to use ChatGPT plan\n",
-                    );
+                    out.push_str("  • Using API key. Run codex login to use ChatGPT plan\n");
                 }
                 _ => {
                     let plan = tokens
@@ -266,7 +265,9 @@ pub fn status_string(
                         .unwrap_or_else(|| "Unknown".to_string());
                     let mut ch = plan.chars();
                     let plan_tc = match ch.next() {
-                        Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+                        Some(f) => {
+                            format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase())
+                        }
                         None => plan,
                     };
                     out.push_str(&format!("  • Plan: {}\n", plan_tc));

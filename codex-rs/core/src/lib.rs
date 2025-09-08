@@ -65,10 +65,10 @@ pub use rollout::RolloutRecorder;
 pub use rollout::list::ConversationItem;
 pub use rollout::list::ConversationsPage;
 pub use rollout::list::Cursor;
-mod user_notification;
-pub mod util;
 /// Public constants exposing the absolute paths of built-in prompts at build time.
 pub mod prompt_paths;
+mod user_notification;
+pub mod util;
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use safety::get_platform_sandbox;
 // Re-export the protocol types from the standalone `codex-protocol` crate so existing
