@@ -91,3 +91,11 @@ tmp-codex-home/
 # Local qoo-bridge runtime artifacts (ignored)
 /qoo-bridge/.venv/
 /qoo-bridge/*.pid
+
+# Python virtualenvs and caches
+lan-chatgpt-proxy/.venv/
+lan-chatgpt-proxy/__pycache__/
+qoo-bridge/__pycache__/
+**/__pycache__/
+*.pyc
+
