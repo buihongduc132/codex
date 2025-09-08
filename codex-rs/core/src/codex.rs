@@ -15,6 +15,7 @@ use async_channel::Sender;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::MaybeApplyPatchVerified;
 use codex_apply_patch::maybe_parse_apply_patch_verified;
+use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::protocol::ConversationHistoryResponseEvent;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
@@ -149,6 +150,7 @@ pub struct Codex {
 pub struct CodexSpawnOk {
     pub codex: Codex,
     pub session_id: Uuid,
+    pub conversation_id: ConversationId,
 }
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -206,6 +208,7 @@ impl Codex {
             .record_initial_history(&turn_context, conversation_history)
             .await;
         let session_id = session.session_id;
+        let conversation_id = ConversationId(session_id);
 
         // This task will run until Op::Shutdown is received.
         tokio::spawn(submission_loop(
@@ -220,7 +223,11 @@ impl Codex {
             rx_event,
         };
 
-        Ok(CodexSpawnOk { codex, session_id })
+        Ok(CodexSpawnOk {
+            codex,
+            session_id,
+            conversation_id,
+        })
     }
 
     /// Submit the `op` wrapped in a `Submission` with a unique ID.
@@ -389,7 +396,11 @@ impl Session {
         // - spin up MCP connection manager
         // - perform default shell discovery
         // - load history metadata
-        let rollout_fut = RolloutRecorder::new(&config, session_id, user_instructions.clone());
+        let rollout_fut = RolloutRecorder::new(
+            &config,
+            ConversationId(session_id),
+            user_instructions.clone(),
+        );
 
         let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
         let default_shell_fut = shell::default_user_shell();
@@ -443,7 +454,7 @@ impl Session {
             provider.clone(),
             model_reasoning_effort,
             model_reasoning_summary,
-            session_id,
+            ConversationId(session_id),
         );
         let turn_context = TurnContext {
             client,
@@ -489,7 +500,7 @@ impl Session {
         let events = std::iter::once(Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id,
+                session_id: ConversationId(session_id),
                 model,
                 history_log_id,
                 history_entry_count,
@@ -1093,7 +1104,7 @@ async fn submission_loop(
                     provider,
                     effective_effort,
                     effective_summary,
-                    sess.session_id,
+                    ConversationId(sess.session_id),
                 );
 
                 let new_approval_policy = approval_policy.unwrap_or(prev.approval_policy);
@@ -1183,7 +1194,7 @@ async fn submission_loop(
                         provider,
                         effort,
                         summary,
-                        sess.session_id,
+                        ConversationId(sess.session_id),
                     );
 
                     let fresh_turn_context = TurnContext {
@@ -1228,7 +1239,7 @@ async fn submission_loop(
                 other => sess.notify_approval(&id, other),
             },
             Op::AddToHistory { text } => {
-                let id = sess.session_id;
+                let id = ConversationId(sess.session_id);
                 let config = config.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::message_history::append_entry(&text, &id, &config).await
@@ -1259,7 +1270,7 @@ async fn submission_loop(
                                 log_id,
                                 entry: entry_opt.map(|e| {
                                     codex_protocol::message_history::HistoryEntry {
-                                        session_id: e.session_id,
+                                        conversation_id: e.session_id,
                                         ts: e.ts,
                                         text: e.text,
                                     }
@@ -1365,7 +1376,7 @@ async fn submission_loop(
                 let event = Event {
                     id: sub_id.clone(),
                     msg: EventMsg::ConversationHistory(ConversationHistoryResponseEvent {
-                        conversation_id: sess.session_id,
+                        conversation_id: ConversationId(sess.session_id),
                         entries: sess.state.lock_unchecked().history.contents(),
                     }),
                 };
@@ -1611,7 +1622,6 @@ async fn run_turn(
 
     let prompt = Prompt {
         input,
-        store: !turn_context.disable_response_storage,
         tools,
         base_instructions_override: turn_context.base_instructions.clone(),
     };
@@ -1784,10 +1794,17 @@ async fn try_run_turn(
                 token_usage,
             } => {
                 if let Some(token_usage) = token_usage {
+                    let info = codex_protocol::protocol::TokenUsageInfo {
+                        total_token_usage: token_usage.clone(),
+                        last_token_usage: token_usage,
+                        model_context_window: turn_context.client.get_model_context_window(),
+                    };
                     sess.tx_event
                         .send(Event {
                             id: sub_id.to_string(),
-                            msg: EventMsg::TokenCount(token_usage),
+                            msg: EventMsg::TokenCount(codex_protocol::protocol::TokenCountEvent {
+                                info: Some(info),
+                            }),
                         })
                         .await
                         .ok();
@@ -1865,7 +1882,6 @@ async fn run_compact_task(
 
     let prompt = Prompt {
         input: turn_input,
-        store: !turn_context.disable_response_storage,
         tools: Vec::new(),
         base_instructions_override: Some(compact_instructions.clone()),
     };
@@ -2861,10 +2877,17 @@ async fn drain_to_completed(
                 // some providers don't return token usage, so we default
                 // TODO: consider approximate token usage
                 let token_usage = token_usage.unwrap_or_default();
+                let info = codex_protocol::protocol::TokenUsageInfo {
+                    total_token_usage: token_usage.clone(),
+                    last_token_usage: token_usage,
+                    model_context_window: turn_context.client.get_model_context_window(),
+                };
                 sess.tx_event
                     .send(Event {
                         id: sub_id.to_string(),
-                        msg: EventMsg::TokenCount(token_usage),
+                        msg: EventMsg::TokenCount(codex_protocol::protocol::TokenCountEvent {
+                            info: Some(info),
+                        }),
                     })
                     .await
                     .ok();

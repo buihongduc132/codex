@@ -180,6 +180,10 @@ impl ModelClient {
         // history for this wire path. Message items already have their `id`
         // cleared when recorded in history.
         let input_with_instructions = prompt.get_formatted_input();
+        // Upstream does not persist items for ChatGPT auth when `store=false`.
+        // Preserve our behaviour by filtering out Reasoning items in that case.
+        let store = false;
+        let auth_mode = Some(self.config.preferred_auth_method);
         let input_for_request: Vec<codex_protocol::models::ResponseItem> =
             if auth_mode == Some(AuthMode::ChatGPT) && !store {
                 input_with_instructions

@@ -71,12 +71,14 @@ impl ConversationManager {
             let CodexSpawnOk {
                 codex,
                 conversation_id,
+                ..
             } = Codex::spawn(config, auth_manager, initial_history).await?;
             self.finalize_spawn(codex, conversation_id).await
         } else {
             let CodexSpawnOk {
                 codex,
                 conversation_id,
+                ..
             } = { Codex::spawn(config, auth_manager, InitialHistory::New).await? };
             self.finalize_spawn(codex, conversation_id).await
         }
@@ -135,6 +137,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            ..
         } = Codex::spawn(config, auth_manager, initial_history).await?;
         self.finalize_spawn(codex, conversation_id).await
     }
@@ -162,6 +165,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            ..
         } = Codex::spawn(config, auth_manager, history).await?;
 
         self.finalize_spawn(codex, conversation_id).await

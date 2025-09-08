@@ -7,7 +7,6 @@ use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyToml;
 use crate::config_types::Tui;
 use crate::config_types::UriBasedFileOpener;
-use crate::config_types::Verbosity;
 use crate::exec::DEFAULT_TIMEOUT_MS;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
@@ -17,10 +16,11 @@ use crate::model_provider_info::built_in_model_providers;
 use crate::openai_model_info::get_model_info;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
-use codex_login::AuthMode;
 use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::config_types::Verbosity;
+use codex_protocol::mcp_protocol::AuthMode;
 use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -777,9 +777,10 @@ impl Config {
             sandbox_policy,
             shell_environment_policy,
             exec_timeout_ms,
-            disable_response_storage: config_profile
+            // Profiles do not carry disable_response_storage; prefer explicit
+            // CLI override, then config.toml field, then computed default.
+            disable_response_storage: cfg
                 .disable_response_storage
-                .or(cfg.disable_response_storage)
                 .or(disable_response_storage)
                 .unwrap_or(false),
             notify: cfg.notify,
