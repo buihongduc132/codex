@@ -4,7 +4,10 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
 use app::App;
+use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
+use codex_core::CodexAuth;
+use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -12,12 +15,11 @@ use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
-use codex_login::AuthManager;
-use codex_login::AuthMode;
-use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::mcp_protocol::AuthMode;
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing::error;
 use tracing_appender::non_blocking;
@@ -48,6 +50,7 @@ mod markdown_stream;
 pub mod onboarding;
 mod pager_overlay;
 mod render;
+mod resume_picker;
 mod session_log;
 mod shimmer;
 mod slash_command;
@@ -73,6 +76,231 @@ use crate::onboarding::onboarding_screen::run_onboarding_app;
 use crate::tui::Tui;
 
 // (tests access modules directly within the crate)
+
+/// Non-interactive status: compute the effective configuration and return a
+/// summary string similar to `/status` but for plain stdout.
+pub fn status_string(
+    cli: &Cli,
+    codex_linux_sandbox_exe: Option<std::path::PathBuf>,
+) -> std::io::Result<String> {
+    use codex_core::config::Config as CoreConfig;
+    use codex_core::config::ConfigOverrides;
+    use codex_core::config::find_codex_home;
+    use codex_core::config::load_config_as_toml_with_cli_overrides;
+    use codex_core::protocol::AskForApproval;
+    use codex_protocol::config_types::SandboxMode;
+
+    let (sandbox_mode, approval_policy) = if cli.full_auto {
+        (
+            Some(SandboxMode::WorkspaceWrite),
+            Some(AskForApproval::OnFailure),
+        )
+    } else if cli.dangerously_bypass_approvals_and_sandbox {
+        (
+            Some(SandboxMode::DangerFullAccess),
+            Some(AskForApproval::Never),
+        )
+    } else {
+        (
+            cli.sandbox_mode.map(Into::<SandboxMode>::into),
+            cli.approval_policy.map(Into::into),
+        )
+    };
+
+    let model = if let Some(model) = &cli.model {
+        Some(model.clone())
+    } else if cli.oss {
+        Some(codex_ollama::DEFAULT_OSS_MODEL.to_owned())
+    } else {
+        None
+    };
+
+    let model_provider_override = if cli.oss {
+        Some(codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID.to_owned())
+    } else {
+        None
+    };
+
+    let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
+    let base_instructions = cli.experimental_instructions.clone();
+
+    let overrides = ConfigOverrides {
+        model,
+        approval_policy,
+        sandbox_mode,
+        cwd,
+        model_provider: model_provider_override,
+        config_profile: cli.config_profile.clone(),
+        codex_linux_sandbox_exe,
+        base_instructions,
+        include_plan_tool: Some(true),
+        include_apply_patch_tool: None,
+        include_view_image_tool: None,
+        disable_response_storage: cli.oss.then_some(true),
+        show_raw_agent_reasoning: cli.oss.then_some(true),
+        tools_web_search_request: cli.web_search.then_some(true),
+    };
+
+    let raw_overrides = cli.config_overrides.raw_overrides.clone();
+    let overrides_cli = codex_common::CliConfigOverrides { raw_overrides };
+    let cli_kv_overrides = overrides_cli
+        .parse_overrides()
+        .map_err(|e| std::io::Error::other(format!("Error parsing -c overrides: {e}")))?;
+
+    let mut config: CoreConfig =
+        CoreConfig::load_with_cli_overrides(cli_kv_overrides.clone(), overrides)?;
+
+    let codex_home = find_codex_home()?;
+    let config_toml = load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides)?;
+
+    let _ = determine_repo_trust_state(
+        &mut config,
+        &config_toml,
+        approval_policy,
+        sandbox_mode,
+        cli.config_profile.clone(),
+    )?;
+
+    let approval_str = match config.approval_policy {
+        codex_core::protocol::AskForApproval::UnlessTrusted => "untrusted",
+        codex_core::protocol::AskForApproval::OnFailure => "on-failure",
+        codex_core::protocol::AskForApproval::OnRequest => "on-request",
+        codex_core::protocol::AskForApproval::Never => "never",
+    };
+
+    let sandbox_str = match config.sandbox_policy {
+        codex_core::protocol::SandboxPolicy::DangerFullAccess => "danger-full-access",
+        codex_core::protocol::SandboxPolicy::ReadOnly => "read-only",
+        codex_core::protocol::SandboxPolicy::WorkspaceWrite { .. } => "workspace-write",
+    };
+
+    let profile_name = cli
+        .config_profile
+        .clone()
+        .or(config_toml.profile)
+        .unwrap_or_else(|| "default".to_string());
+
+    use codex_core::prompt_paths;
+    let cwd_display = {
+        fn relativize_to_home(path: &Path) -> Option<PathBuf> {
+            let home = dirs::home_dir()?;
+            path.strip_prefix(&home).ok().map(|p| p.to_path_buf())
+        }
+        match relativize_to_home(&config.cwd) {
+            Some(rel) if !rel.as_os_str().is_empty() => {
+                let sep = std::path::MAIN_SEPARATOR;
+                format!("~{sep}{}", rel.display())
+            }
+            Some(_) => "~".to_string(),
+            None => config.cwd.display().to_string(),
+        }
+    };
+
+    // Reasoning info via summary
+    let summary = codex_common::create_config_summary_entries(&config);
+    let lookup = |k: &str| -> String {
+        summary
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+
+    // AGENTS files (absolute)
+    let agents_abs: String = match codex_core::project_doc::discover_project_doc_paths(&config) {
+        Ok(paths) if !paths.is_empty() => paths
+            .into_iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::from("(none)"),
+    };
+
+    // Prompts
+    const INIT_PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
+
+    let provider_disp = if config.model_provider_id.eq_ignore_ascii_case("openai") {
+        "OpenAI".to_string()
+    } else {
+        let id = &config.model_provider_id;
+        let mut ch = id.chars();
+        match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => id.clone(),
+        }
+    };
+
+    let mut out = String::new();
+    out.push_str("/status\n");
+    out.push_str("📂 Workspace\n");
+    out.push_str(&format!("  • Path: {}\n", cwd_display));
+    out.push_str(&format!("  • Approval Mode: {}\n", approval_str));
+    out.push_str(&format!("  • Sandbox: {}\n", sandbox_str));
+    out.push_str(&format!("  • AGENTS files: {}\n", agents_abs));
+    out.push_str(&format!(
+        "  • System Prompt: {}\n  • Init Prompt: {}\n  • Compact Prompt: {}\n",
+        prompt_paths::SYSTEM_INSTRUCTIONS_PATH,
+        INIT_PROMPT_PATH,
+        prompt_paths::COMPACT_PROMPT_PATH
+    ));
+
+    // Account (if present)
+    let auth_file = codex_core::AuthManager::get_auth_file(&config.codex_home);
+    if let Ok(auth) = codex_core::AuthManager::try_read_auth_json(&auth_file) {
+        if let Some(tokens) = auth.tokens.clone() {
+            out.push_str("👤 Account\n");
+            out.push_str("  • Signed in with ChatGPT\n");
+            if let Some(email) = &tokens.id_token.email {
+                out.push_str(&format!("  • Login: {}\n", email));
+            }
+            match auth.openai_api_key.as_deref() {
+                Some(key) if !key.is_empty() => {
+                    out.push_str(
+                        "  • Using API key. Run codex login to use ChatGPT plan\n",
+                    );
+                }
+                _ => {
+                    let plan = tokens
+                        .id_token
+                        .get_chatgpt_plan_type()
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let mut ch = plan.chars();
+                    let plan_tc = match ch.next() {
+                        Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+                        None => plan,
+                    };
+                    out.push_str(&format!("  • Plan: {}\n", plan_tc));
+                }
+            }
+        }
+    }
+
+    out.push_str("🧠 Model\n");
+    out.push_str(&format!("  • Name: {}\n", config.model));
+    out.push_str(&format!("  • Provider: {}\n", provider_disp));
+    let eff = lookup("reasoning effort");
+    if !eff.is_empty() {
+        let mut ch = eff.chars();
+        let eff_tc = match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => eff,
+        };
+        out.push_str(&format!("  • Reasoning Effort: {}\n", eff_tc));
+    }
+    let sum = lookup("reasoning summaries");
+    if !sum.is_empty() {
+        let mut ch = sum.chars();
+        let sum_tc = match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => sum,
+        };
+        out.push_str(&format!("  • Reasoning Summaries: {}\n", sum_tc));
+    }
+
+    out.push_str("\n📊 Token Usage\n");
+    out.push_str("  • Input: 0\n  • Output: 0\n  • Total: 0\n");
+    Ok(out)
+}
 
 pub async fn run_main(
     cli: Cli,
@@ -115,6 +343,28 @@ pub async fn run_main(
     // canonicalize the cwd
     let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
 
+    // Resolve experimental base instructions if provided via CLI.
+    let base_instructions = if let Some(s) = cli.experimental_instructions.as_deref() {
+        let p = Path::new(s);
+        if p.exists() && p.is_file() {
+            match std::fs::read_to_string(p) {
+                Ok(contents) => Some(contents),
+                Err(e) => {
+                    // Fall back to the raw string when reading fails.
+                    tracing::warn!(
+                        "Failed to read experimental instructions from {}: {e}",
+                        p.display()
+                    );
+                    Some(s.to_string())
+                }
+            }
+        } else {
+            Some(s.to_string())
+        }
+    } else {
+        None
+    };
+
     let overrides = ConfigOverrides {
         model,
         approval_policy,
@@ -123,7 +373,7 @@ pub async fn run_main(
         model_provider: model_provider_override,
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
-        base_instructions: None,
+        base_instructions,
         include_plan_tool: Some(true),
         include_apply_patch_tool: None,
         include_view_image_tool: None,
@@ -257,7 +507,6 @@ async fn run_ratatui_app(
     if let Some(latest_version) = updates::get_upgrade_version(&config) {
         use ratatui::style::Stylize as _;
         use ratatui::text::Line;
-        use ratatui::text::Span;
 
         let current_version = env!("CARGO_PKG_VERSION");
         let exe = std::env::current_exe()?;
@@ -266,35 +515,35 @@ async fn run_ratatui_app(
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
             "✨⬆️ Update available!".bold().cyan(),
-            Span::raw(" "),
-            Span::raw(format!("{current_version} -> {latest_version}.")),
+            " ".into(),
+            format!("{current_version} -> {latest_version}.").into(),
         ]));
 
         if managed_by_npm {
             let npm_cmd = "npm install -g @openai/codex@latest";
             lines.push(Line::from(vec![
-                Span::raw("Run "),
+                "Run ".into(),
                 npm_cmd.cyan(),
-                Span::raw(" to update."),
+                " to update.".into(),
             ]));
         } else if cfg!(target_os = "macos")
             && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
         {
             let brew_cmd = "brew upgrade codex";
             lines.push(Line::from(vec![
-                Span::raw("Run "),
+                "Run ".into(),
                 brew_cmd.cyan(),
-                Span::raw(" to update."),
+                " to update.".into(),
             ]));
         } else {
             lines.push(Line::from(vec![
-                Span::raw("See "),
+                "See ".into(),
                 "https://github.com/openai/codex/releases/latest".cyan(),
-                Span::raw(" for the latest releases and installation options."),
+                " for the latest releases and installation options.".into(),
             ]));
         }
 
-        lines.push(Line::from(""));
+        lines.push("".into());
         tui.insert_history_lines(lines);
     }
 
@@ -304,24 +553,28 @@ async fn run_ratatui_app(
     let Cli {
         prompt,
         images,
-        auto_compact,
+        resume,
+        r#continue,
+        load_path,
         ..
     } = cli;
 
-    let auth_manager = AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        config.preferred_auth_method,
+        config.responses_originator_header.clone(),
+    );
     let login_status = get_login_status(&config);
     let should_show_onboarding =
         should_show_onboarding(login_status, &config, should_show_trust_screen);
     if should_show_onboarding {
         let directory_trust_decision = run_onboarding_app(
             OnboardingScreenArgs {
-                codex_home: config.codex_home.clone(),
-                cwd: config.cwd.clone(),
                 show_login_screen: should_show_login_screen(login_status, &config),
                 show_trust_screen: should_show_trust_screen,
                 login_status,
-                preferred_auth_method: config.preferred_auth_method,
                 auth_manager: auth_manager.clone(),
+                config: config.clone(),
             },
             &mut tui,
         )
@@ -332,7 +585,39 @@ async fn run_ratatui_app(
         }
     }
 
-    let app_result = App::run(&mut tui, auth_manager, config, prompt, images, auto_compact).await;
+    let resume_selection = if let Some(path) = load_path {
+        resume_picker::ResumeSelection::Resume(path)
+    } else if r#continue {
+        match RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
+            Ok(page) => page
+                .items
+                .first()
+                .map(|it| resume_picker::ResumeSelection::Resume(it.path.clone()))
+                .unwrap_or(resume_picker::ResumeSelection::StartFresh),
+            Err(_) => resume_picker::ResumeSelection::StartFresh,
+        }
+    } else if resume {
+        match resume_picker::run_resume_picker(&mut tui, &config.codex_home).await? {
+            resume_picker::ResumeSelection::Exit => {
+                restore();
+                session_log::log_session_end();
+                return Ok(codex_core::protocol::TokenUsage::default());
+            }
+            other => other,
+        }
+    } else {
+        resume_picker::ResumeSelection::StartFresh
+    };
+
+    let app_result = App::run(
+        &mut tui,
+        auth_manager,
+        config,
+        prompt,
+        images,
+        resume_selection,
+    )
+    .await;
 
     restore();
     // Mark the end of the recorded session.
@@ -364,7 +649,11 @@ fn get_login_status(config: &Config) -> LoginStatus {
         // Reading the OpenAI API key is an async operation because it may need
         // to refresh the token. Block on it.
         let codex_home = config.codex_home.clone();
-        match CodexAuth::from_codex_home(&codex_home, config.preferred_auth_method) {
+        match CodexAuth::from_codex_home(
+            &codex_home,
+            config.preferred_auth_method,
+            &config.responses_originator_header,
+        ) {
             Ok(Some(auth)) => LoginStatus::AuthMode(auth.mode),
             Ok(None) => LoginStatus::NotAuthenticated,
             Err(err) => {

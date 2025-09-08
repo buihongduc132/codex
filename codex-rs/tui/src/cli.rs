@@ -86,6 +86,22 @@ pub struct Cli {
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
+    /// Load a specific conversation from a rollout path.
+    #[arg(long = "load-path", value_name = "FILE")]
+    pub load_path: Option<PathBuf>,
+
+    /// Override the built-in system prompt (base instructions).
+    ///
+    /// If the value looks like a path to an existing file, the contents of the
+    /// file are used. Otherwise, the value itself is used verbatim as the
+    /// instructions string.
+    #[arg(long = "experimental-instructions")]
+    pub experimental_instructions: Option<String>,
+
+    /// Print status and exit (non-interactive).
+    #[arg(long = "status", default_value_t = false)]
+    pub status: bool,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }

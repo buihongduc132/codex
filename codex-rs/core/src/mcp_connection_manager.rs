@@ -127,12 +127,7 @@ impl McpConnectionManager {
             }
 
             // Skip entries without a valid command instead of failing startup.
-            if cfg
-                .command
-                .as_deref()
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(true)
-            {
+            if cfg.command.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
                 let error = anyhow::anyhow!(
                     "mcp_servers.{} is missing a 'command' – skipping",
                     server_name
@@ -152,8 +147,7 @@ impl McpConnectionManager {
                     command_str.into(),
                     args_vec.into_iter().map(OsString::from).collect(),
                     env_map,
-                )
-                .await;
+                ).await;
                 match client_res {
                     Ok(client) => {
                         // Initialize the client.
@@ -175,8 +169,7 @@ impl McpConnectionManager {
                         let timeout = Some(Duration::from_secs(10));
                         match client
                             .initialize(params, initialize_notification_params, timeout)
-                            .await
-                        {
+                            .await {
                             Ok(_response) => (server_name_cloned, Ok(client)),
                             Err(e) => (server_name_cloned, Err(e)),
                         }

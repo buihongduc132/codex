@@ -9,6 +9,11 @@ on:
 # CI builds in debug (dev) for faster signal.
 
 jobs:
+  _disabled_notice:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Rust CI temporarily disabled via toggle; do not remove workflow."
   # --- Detect what changed (always runs) -------------------------------------
   changed:
     name: Detect changed areas

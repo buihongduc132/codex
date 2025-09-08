@@ -102,10 +102,6 @@ impl StatusIndicatorWidget {
     /// Set the timeout for the current command.
     pub(crate) fn set_timeout(&mut self, timeout_ms: Option<u64>) {
         self.timeout_ms = timeout_ms;
-        // When a command timeout is provided, start a new per-command timer.
-        // When cleared (None), stop using the per-command timer and fall back
-        // to overall task elapsed time.
-        self.command_start_time = self.timeout_ms.map(|_| Instant::now());
         self.frame_requester.schedule_frame();
     }
 }

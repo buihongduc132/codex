@@ -19,4 +19,3 @@ approval_policy = "never"
 model = "gpt-5"
 model_provider = "openai"
 approval_policy = "never"
-

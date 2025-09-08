@@ -1,0 +1,45 @@
+---
+- hosts: all
+  gather_facts: false
+  vars:
+    backup_root: "{{ playbook_dir }}/../../backups/{{ inventory_hostname }}"
+  tasks:
+    - name: Ensure backup dir exists (controller)
+      delegate_to: localhost
+      run_once: false
+      file:
+        path: "{{ backup_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Pull ~/.codex directory
+      synchronize:
+        mode: pull
+        src: "{{ ansible_env.HOME }}/.codex/"
+        dest: "{{ backup_root }}/codex/"
+        archive: yes
+        delete: no
+      ignore_errors: true
+
+    - name: Pull ~/.qoo directory
+      synchronize:
+        mode: pull
+        src: "{{ ansible_env.HOME }}/.qoo/"
+        dest: "{{ backup_root }}/qoo/"
+        archive: yes
+        delete: no
+      ignore_errors: true
+
+    - name: Fetch qox wrapper
+      fetch:
+        src: "{{ ansible_env.HOME }}/bin/qox"
+        dest: "{{ backup_root }}/bin-qox"
+        flat: true
+      ignore_errors: true
+
+    - name: Fetch qoo wrapper
+      fetch:
+        src: "{{ ansible_env.HOME }}/.local/bin/qoo"
+        dest: "{{ backup_root }}/qoo"
+        flat: true
+      ignore_errors: true

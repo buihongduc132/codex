@@ -2508,7 +2508,7 @@
 {"ts":"2025-08-09T15:52:05.868Z","dir":"from_tui","kind":"op","payload":{"type":"exec_approval","id":"1","decision":"approved"}}
 {"ts":"2025-08-09T15:52:05.871Z","dir":"to_tui","kind":"app_event","variant":"Redraw"}
 {"ts":"2025-08-09T15:52:05.876Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_begin","call_id":"call_KOxVodT3X5ci7LJmudvcovhW","command":["bash","-lc","just fix"],"cwd":"/Users/easong/code/codex/codex-rs","parsed_cmd":[],"timeout_ms":10000}}}
-{"ts":"2025-08-09T15:52:05.921Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_output_delta","call_id":"call_KOxVodT3X5ci7LJmudvcovhW","stream":"stderr","chunk":"Y2FyZ28gY2xpcHB5IC0tZml4IC0tYWxsLWZlYXR1cmVzIC0tdGVzdHMgLS1hbGxvdy1kaXJ0eQo="}}}
+{"ts":"2025-08-09T15:52:05.921Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_output_delta","call_id":"call_KOxVodT3X5ci7LJmudvcovhW","stream":"stderr","chunk":[99,97,114,103,111,32,99,108,105,112,112,121,32,45,45,102,105,120,32,45,45,97,108,108,45,102,101,97,116,117,114,101,115,32,45,45,116,101,115,116,115,32,45,45,97,108,108,111,119,45,100,105,114,116,121,10]}}}
 {"ts":"2025-08-09T15:52:05.969Z","dir":"to_tui","kind":"app_event","variant":"RequestRedraw"}
 {"ts":"2025-08-09T15:52:05.971Z","dir":"to_tui","kind":"app_event","variant":"Redraw"}
 {"ts":"2025-08-09T15:52:05.972Z","dir":"to_tui","kind":"app_event","variant":"RequestRedraw"}
@@ -4200,7 +4200,7 @@
 {"ts":"2025-08-09T15:57:06.315Z","dir":"from_tui","kind":"op","payload":{"type":"exec_approval","id":"1","decision":"approved_for_session"}}
 {"ts":"2025-08-09T15:57:06.317Z","dir":"to_tui","kind":"app_event","variant":"Redraw"}
 {"ts":"2025-08-09T15:57:06.319Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_begin","call_id":"call_POl3hxI2xeszBLv9IOM7L2ir","command":["bash","-lc","just fix"],"cwd":"/Users/easong/code/codex/codex-rs","parsed_cmd":[],"timeout_ms":10000}}}
-{"ts":"2025-08-09T15:57:06.332Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_output_delta","call_id":"call_POl3hxI2xeszBLv9IOM7L2ir","stream":"stderr","chunk":"Y2FyZ28gY2xpcHB5IC0tZml4IC0tYWxsLWZlYXR1cmVzIC0tdGVzdHMgLS1hbGxvdy1kaXJ0eQo="}}}
+{"ts":"2025-08-09T15:57:06.332Z","dir":"to_tui","kind":"codex_event","payload":{"id":"1","msg":{"type":"exec_command_output_delta","call_id":"call_POl3hxI2xeszBLv9IOM7L2ir","stream":"stderr","chunk":[99,97,114,103,111,32,99,108,105,112,112,121,32,45,45,102,105,120,32,45,45,97,108,108,45,102,101,97,116,117,114,101,115,32,45,45,116,101,115,116,115,32,45,45,97,108,108,111,119,45,100,105,114,116,121,10]}}}
 {"ts":"2025-08-09T15:57:06.416Z","dir":"to_tui","kind":"app_event","variant":"RequestRedraw"}
 {"ts":"2025-08-09T15:57:06.417Z","dir":"to_tui","kind":"app_event","variant":"Redraw"}
 {"ts":"2025-08-09T15:57:06.419Z","dir":"to_tui","kind":"app_event","variant":"RequestRedraw"}

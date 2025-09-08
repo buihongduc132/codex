@@ -1,0 +1,33 @@
+approval_policy = "never"
+sandbox_mode    = "danger-full-access"
+
+model_reasoning_summary_format = "experimental"
+experimental_use_exec_command_tool = true
+view_image = true
+
+[tools]
+web_search = true
+
+[projects]
+[projects."{{ ansible_env.HOME }}/Documents/Projects/bhd/qox"]
+trust_level = "trusted"
+experimental_instructions_file = "{{ ansible_env.HOME }}/Documents/Projects/bhd/qox/codex-rs/core/prompt.md"
+exec_timeout_ms = 2000
+
+{% if context7_enabled %}
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp", "--api-key", "{{ context7_api_key }}"]
+{% endif %}
+
+{% if playwright_enabled %}
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+{% endif %}
+
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = true
+experimental_use_profile = true
+

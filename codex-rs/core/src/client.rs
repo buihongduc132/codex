@@ -181,7 +181,25 @@ impl ModelClient {
             vec![]
         };
 
+        // Build the input for this turn. When using ChatGPT auth with
+        // store=false, upstream does not persist items and will reject inputs
+        // that reference prior items by ID (e.g. reasoning items with ids like
+        // "rs_*"), leading to 404 "Item not found" errors on subsequent turns.
+        //
+        // To avoid this, drop Reasoning items from the replayed conversation
+        // history for this wire path. Message items already have their `id`
+        // cleared when recorded in history.
         let input_with_instructions = prompt.get_formatted_input();
+        let input_for_request: Vec<codex_protocol::models::ResponseItem> = if auth_mode == Some(AuthMode::ChatGPT) && !store {
+            input_with_instructions
+                .into_iter()
+                .filter(|item| {
+                    !matches!(item, codex_protocol::models::ResponseItem::Reasoning { .. })
+                })
+                .collect()
+        } else {
+            input_with_instructions
+        };
 
         // Only include `text.verbosity` for GPT-5 family models
         let text = if self.config.model_family.family == "gpt-5" {
@@ -199,7 +217,7 @@ impl ModelClient {
         let payload = ResponsesApiRequest {
             model: &self.config.model,
             instructions: &full_instructions,
-            input: &input_with_instructions,
+            input: &input_for_request,
             tools: &tools_json,
             tool_choice: "auto",
             parallel_tool_calls: false,

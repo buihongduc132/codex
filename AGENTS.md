@@ -52,3 +52,51 @@ This repo uses snapshot tests (via `insta`), especially in `codex-rs/tui`, to va
 
 If you don’t have the tool:
 - `cargo install cargo-insta`
+
+## End‑to‑end verification (agent policy)
+
+When a change affects runtime behavior (CLI flags, output, prompts, UI text, etc.), the agent must:
+- Build the modified crate(s) successfully (`cargo build -p <crate>`).
+- Perform a real, non‑interactive run to verify behavior when feasible (e.g., a dedicated status or dry‑run mode) and capture sample output in the handoff.
+- Avoid offloading basic verification to the user. Only ask for manual steps when external systems (e.g., network accounts, API keys, OS‑level wrappers) are required and cannot be exercised in the sandbox.
+
+## Root‑Cause Fixes Over Workarounds
+
+- Always fix problems at the fundamental level. Do not ship monkey patches, ad‑hoc workarounds, or band‑aids that mask the real issue.
+- Prefer small, targeted changes that address the root cause in core code paths (protocol, path resolution, config) over app‑level hacks.
+- When the issue stems from ambiguous context (e.g., missing cwd), make that context explicit and thread it through the system.
+
+## Persistent CWD and Workspace Discipline
+
+To avoid confusion and inconsistent behavior between tools, the agent MUST operate with a persistent, explicit working directory:
+
+- Carry `cwd` explicitly in session/config and honor it everywhere (exec, apply_patch, file reads/writes).
+- Resolve relative paths for apply_patch and shell operations against the correct workdir, not the binary’s directory.
+- When the model emits commands like `cd foo && …`, treat `foo` as the intended workdir for that operation (parse and apply consistently).
+- Validate the workdir before spawn. If it doesn’t exist, fail clearly or fall back in a predictable way (and surface the chosen cwd in logs/events).
+
+Upstream reference PRs in base that implement these behaviors (use them as patterns when changing code here):
+- feat: make cwd a required field of Config (#800)
+- fix: when a shell tool call invokes apply_patch, resolve relative paths against workdir (#556)
+- fix: ensure apply_patch resolves relative paths against workdir or project cwd (#810)
+- parse `cd foo && …` for exec and apply_patch (#3083)
+- fix: check workdir before spawn (#221)
+
+## Initial Environment Context (Always Provide)
+
+At session start and before performing file or shell actions, the agent must ensure environment context is captured and visible to both the user and the model:
+
+- cwd: absolute path of the current working directory.
+- git repo: repo root path if inside a Git repository; otherwise “none”.
+- branch: current branch name (or detached HEAD SHA) if in a Git repo.
+
+Expose this context via:
+- Status lines or the first system/assistant message in a session.
+- Exec summaries for failures (include cwd and tails where applicable).
+- When possible, pass `-C/--cd <cwd>` at launch so the runtime and UI agree on cwd.
+
+## Machine State (_STATE.md)
+
+- This repo includes a root‑level `_STATE.md` that records the current machine’s setup for Codex wrappers, config symlinks, Ansible rollout settings, and versions.
+- Agents and contributors should skim `_STATE.md` first to understand the local environment before making changes.
+- `_STATE.md` is intentionally git‑ignored and may differ per machine; treat it as a local source of truth for operational context.

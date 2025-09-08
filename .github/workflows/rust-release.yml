@@ -16,6 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  _disabled_notice:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Release workflow temporarily disabled via toggle; do not remove."
   tag-check:
     runs-on: ubuntu-latest
     steps:
