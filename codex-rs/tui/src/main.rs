@@ -21,10 +21,11 @@ fn main() -> anyhow::Result<()> {
             .config_overrides
             .raw_overrides
             .splice(0..0, top_cli.config_overrides.raw_overrides);
-
-        // Non‑interactive status mode: treat a literal positional "status"
-        // as a command to print the effective configuration and exit.
-        if matches!(inner.prompt.as_deref(), Some("status")) {
+        // Non‑interactive status mode: support either --status flag or
+        // a positional prompt of "status"/"--status".
+        if inner.status
+            || matches!(inner.prompt.as_deref(), Some("status") | Some("--status"))
+        {
             let s = codex_tui::status_string(&inner, codex_linux_sandbox_exe)?;
             println!("{s}");
             return Ok(());

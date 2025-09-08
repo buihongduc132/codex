@@ -78,7 +78,7 @@ use crate::tui::Tui;
 // (tests access modules directly within the crate)
 
 /// Non-interactive status: compute the effective configuration and return a
-/// short summary string. Useful for scripts or wrappers (`qoo status`).
+/// summary string similar to `/status` but for plain stdout.
 pub fn status_string(
     cli: &Cli,
     codex_linux_sandbox_exe: Option<std::path::PathBuf>,
@@ -180,19 +180,126 @@ pub fn status_string(
         .or(config_toml.profile)
         .unwrap_or_else(|| "default".to_string());
 
-    let s = format!(
-        "Workspace
-  • Path: {path}
-  • Approval Mode: {approval}
-  • Sandbox: {sandbox}
-  • Profile: {profile}
-",
-        path = config.cwd.display(),
-        approval = approval_str,
-        sandbox = sandbox_str,
-        profile = profile_name,
-    );
-    Ok(s)
+    use codex_core::prompt_paths;
+    let cwd_display = {
+        fn relativize_to_home(path: &Path) -> Option<PathBuf> {
+            let home = dirs::home_dir()?;
+            path.strip_prefix(&home).ok().map(|p| p.to_path_buf())
+        }
+        match relativize_to_home(&config.cwd) {
+            Some(rel) if !rel.as_os_str().is_empty() => {
+                let sep = std::path::MAIN_SEPARATOR;
+                format!("~{sep}{}", rel.display())
+            }
+            Some(_) => "~".to_string(),
+            None => config.cwd.display().to_string(),
+        }
+    };
+
+    // Reasoning info via summary
+    let summary = codex_common::create_config_summary_entries(&config);
+    let lookup = |k: &str| -> String {
+        summary
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+
+    // AGENTS files (absolute)
+    let agents_abs: String = match codex_core::project_doc::discover_project_doc_paths(&config) {
+        Ok(paths) if !paths.is_empty() => paths
+            .into_iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::from("(none)"),
+    };
+
+    // Prompts
+    const INIT_PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
+
+    let provider_disp = if config.model_provider_id.eq_ignore_ascii_case("openai") {
+        "OpenAI".to_string()
+    } else {
+        let id = &config.model_provider_id;
+        let mut ch = id.chars();
+        match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => id.clone(),
+        }
+    };
+
+    let mut out = String::new();
+    out.push_str("/status\n");
+    out.push_str("📂 Workspace\n");
+    out.push_str(&format!("  • Path: {}\n", cwd_display));
+    out.push_str(&format!("  • Approval Mode: {}\n", approval_str));
+    out.push_str(&format!("  • Sandbox: {}\n", sandbox_str));
+    out.push_str(&format!("  • AGENTS files: {}\n", agents_abs));
+    out.push_str(&format!(
+        "  • System Prompt: {}\n  • Init Prompt: {}\n  • Compact Prompt: {}\n",
+        prompt_paths::SYSTEM_INSTRUCTIONS_PATH,
+        INIT_PROMPT_PATH,
+        prompt_paths::COMPACT_PROMPT_PATH
+    ));
+
+    // Account (if present)
+    let auth_file = codex_core::AuthManager::get_auth_file(&config.codex_home);
+    if let Ok(auth) = codex_core::AuthManager::try_read_auth_json(&auth_file) {
+        if let Some(tokens) = auth.tokens.clone() {
+            out.push_str("👤 Account\n");
+            out.push_str("  • Signed in with ChatGPT\n");
+            if let Some(email) = &tokens.id_token.email {
+                out.push_str(&format!("  • Login: {}\n", email));
+            }
+            match auth.openai_api_key.as_deref() {
+                Some(key) if !key.is_empty() => {
+                    out.push_str(
+                        "  • Using API key. Run codex login to use ChatGPT plan\n",
+                    );
+                }
+                _ => {
+                    let plan = tokens
+                        .id_token
+                        .get_chatgpt_plan_type()
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let mut ch = plan.chars();
+                    let plan_tc = match ch.next() {
+                        Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+                        None => plan,
+                    };
+                    out.push_str(&format!("  • Plan: {}\n", plan_tc));
+                }
+            }
+        }
+    }
+
+    out.push_str("🧠 Model\n");
+    out.push_str(&format!("  • Name: {}\n", config.model));
+    out.push_str(&format!("  • Provider: {}\n", provider_disp));
+    let eff = lookup("reasoning effort");
+    if !eff.is_empty() {
+        let mut ch = eff.chars();
+        let eff_tc = match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => eff,
+        };
+        out.push_str(&format!("  • Reasoning Effort: {}\n", eff_tc));
+    }
+    let sum = lookup("reasoning summaries");
+    if !sum.is_empty() {
+        let mut ch = sum.chars();
+        let sum_tc = match ch.next() {
+            Some(f) => format!("{}{}", f.to_uppercase(), ch.as_str().to_ascii_lowercase()),
+            None => sum,
+        };
+        out.push_str(&format!("  • Reasoning Summaries: {}\n", sum_tc));
+    }
+
+    out.push_str("\n📊 Token Usage\n");
+    out.push_str("  • Input: 0\n  • Output: 0\n  • Total: 0\n");
+    Ok(out)
 }
 
 pub async fn run_main(

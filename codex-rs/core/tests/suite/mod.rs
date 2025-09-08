@@ -6,6 +6,7 @@ mod compact;
 mod exec;
 mod exec_stream_events;
 mod live_cli;
+mod filter_reasoning_chatgpt;
 mod prompt_caching;
 mod seatbelt;
 mod stream_error_allows_next_turn;

@@ -1,0 +1,10 @@
+model_list:
+  - model_name: local_md
+    litellm_params:
+      # Route LiteLLM to the local bridge (no API key)
+      model: openai/gpt-4o-mini
+      api_base: http://127.0.0.1:4050/v1
+general_settings:
+  # Permit usage without auth on the LiteLLM proxy
+  disable_auth: true
+  drop_params: true

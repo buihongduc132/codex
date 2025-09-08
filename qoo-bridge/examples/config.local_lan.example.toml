@@ -1,0 +1,21 @@
+# qoo dev config for LAN bridge
+model = "gpt-5"
+profile = "openai_plus"
+preferred_auth_method = "chatgpt"
+
+[model_providers.lan]
+name = "LAN ChatGPT Proxy"
+base_url = "http://127.0.0.1:4050/v1"
+wire_api = "responses"
+requires_openai_auth = false
+stream_idle_timeout_ms = 20000
+
+[profiles.local_lan]
+model = "local_md"
+model_provider = "lan"
+approval_policy = "never"
+
+[profiles.openai_plus]
+model = "gpt-5"
+model_provider = "openai"
+approval_policy = "never"

@@ -88,3 +88,6 @@ tmp-codex-home/
 
 # Rust insta snapshot review files
 **/*.snap.new
+# Local qoo-bridge runtime artifacts (ignored)
+/qoo-bridge/.venv/
+/qoo-bridge/*.pid

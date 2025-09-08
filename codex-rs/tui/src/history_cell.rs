@@ -19,6 +19,7 @@ use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
+use codex_core::prompt_paths;
 use codex_core::shell::default_user_shell;
 use codex_login::get_auth_file;
 use codex_login::try_read_auth_json;
@@ -1004,6 +1005,21 @@ pub(crate) fn new_status_output(
             agents_list.join(", ").into(),
         ]));
     }
+
+    // Built-in prompt file locations (absolute paths)
+    const INIT_PROMPT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
+    lines.push(Line::from(vec![
+        "  • System Prompt: ".into(),
+        prompt_paths::SYSTEM_INSTRUCTIONS_PATH.into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • Init Prompt: ".into(),
+        INIT_PROMPT_PATH.into(),
+    ]));
+    lines.push(Line::from(vec![
+        "  • Compact Prompt: ".into(),
+        prompt_paths::COMPACT_PROMPT_PATH.into(),
+    ]));
 
     // 👤 Account (only if ChatGPT tokens exist), shown under the first block
     let auth_file = get_auth_file(&config.codex_home);

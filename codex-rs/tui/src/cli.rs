@@ -94,6 +94,10 @@ pub struct Cli {
     #[arg(long = "experimental-instructions")]
     pub experimental_instructions: Option<String>,
 
+    /// Print status and exit (non-interactive).
+    #[arg(long = "status", default_value_t = false)]
+    pub status: bool,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }
