@@ -3,7 +3,6 @@ use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 
 use crate::history_cell::HistoryCell;
-use std::path::PathBuf;
 
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
@@ -60,7 +59,4 @@ pub(crate) enum AppEvent {
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationHistoryResponseEvent),
-
-    /// Load a specific conversation from a rollout path.
-    LoadPath(PathBuf),
 }

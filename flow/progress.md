@@ -1,0 +1,31 @@
+# Progress (summary)
+
+- Compact prompt: Restored to match `base/main`; removed per‑profile compact overrides; `/compact` always uses built‑in prompt.
+- Exec auto‑save: Internal function added; writes `~/.codex/saves.json` with path + metadata (branch, datetime UTC, cwd, repo, commit, worktree?, blank summary). Config: `exec.auto_save_metadata` (default true), `exec.save_name_pattern`.
+- CLI UX: Added `export`, `import`, and `load --list` to manage rollouts and listing saved sessions.
+- Hooks schema: Added per‑profile hooks types (internal “/cmd” or external argv). Execution wiring is pending finalization.
+- Init prompt: Per‑profile `init_prompt_file` supported; system + compact unchanged.
+
+Testing status (latest)
+- `codex-core`: builds for tests (--no-run)
+- `codex-tui`: fails to build; initial fixes applied (deps/imports), many API/test updates still required.
+- Workspace: full tests not run due to tui build failures.
+
+Artifacts
+- Initial qoop run (spec + workspace scan):
+  - artifacts/qoop_run_20250910_033949.log
+- Feature implementation run (auto‑save, CLI UX, hooks schema, compact reset):
+  - artifacts/qoop_run_20250910_200246.log
+- Track 1 tests (fmt + targeted + workspace):
+  - artifacts/qoop_track1_20250911_015022.log
+  - artifacts/summary_track1_20250910T185204Z.md
+- Track 2 initial merge adjustments (rollout_path adaptation seen in tail):
+  - artifacts/qoop_track2_20250911_015540.log
+- Follow‑ups (spawned, may still be running or may have timed out):
+  - artifacts/qoop_followup_track1_fix_tui_*.log
+  - artifacts/qoop_followup_track2_merge_*.log
+
+Next checkpoints
+- Track 1: Finish tui compile/test fixes, re‑run targeted tests, then full suite.
+- Track 2: Complete merge from `base/main`, reconcile conflicts, build/tests, summarize decisions.
+

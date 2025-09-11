@@ -1,4 +1,5 @@
-use codex_core::protocol::TokenUsage;
+use codex_core::protocol::TokenUsageInfo;
+use codex_protocol::num_format::format_si_suffix;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -53,7 +54,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 #[derive(Debug, PartialEq)]
 pub enum InputResult {
     Submitted(String),
-    Command(SlashCommand, Option<String>),
+    Command(SlashCommand),
     None,
 }
 
@@ -61,21 +62,6 @@ pub enum InputResult {
 struct AttachedImage {
     placeholder: String,
     path: PathBuf,
-}
-
-struct TokenUsageInfo {
-    total_token_usage: TokenUsage,
-    last_token_usage: TokenUsage,
-    model_context_window: Option<u64>,
-    /// Baseline token count present in the context before the user's first
-    /// message content is considered. This is used to normalize the
-    /// "context left" percentage so it reflects the portion the user can
-    /// influence rather than fixed prompt overhead (system prompt, tool
-    /// instructions, etc.).
-    ///
-    /// Preferred source is `cached_input_tokens` from the first turn (when
-    /// available), otherwise we fall back to 0.
-    initial_prompt_tokens: u64,
 }
 
 pub(crate) struct ChatComposer {
@@ -92,9 +78,9 @@ pub(crate) struct ChatComposer {
     pending_pastes: Vec<(String, String)>,
     token_usage_info: Option<TokenUsageInfo>,
     has_focus: bool,
-    auto_compact_enabled: bool,
     attached_images: Vec<AttachedImage>,
     placeholder_text: String,
+    is_task_running: bool,
     // Non-bracketed paste burst tracker.
     paste_burst: PasteBurst,
     // When true, disables paste-burst logic and inserts characters immediately.
@@ -133,9 +119,9 @@ impl ChatComposer {
             pending_pastes: Vec::new(),
             token_usage_info: None,
             has_focus: has_input_focus,
-            auto_compact_enabled: false,
             attached_images: Vec::new(),
             placeholder_text,
+            is_task_running: false,
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
@@ -177,24 +163,8 @@ impl ChatComposer {
     /// Update the cached *context-left* percentage and refresh the placeholder
     /// text. The UI relies on the placeholder to convey the remaining
     /// context when the composer is empty.
-    pub(crate) fn set_token_usage(
-        &mut self,
-        total_token_usage: TokenUsage,
-        last_token_usage: TokenUsage,
-        model_context_window: Option<u64>,
-    ) {
-        let initial_prompt_tokens = self
-            .token_usage_info
-            .as_ref()
-            .map(|info| info.initial_prompt_tokens)
-            .unwrap_or_else(|| last_token_usage.cached_input_tokens.unwrap_or(0));
-
-        self.token_usage_info = Some(TokenUsageInfo {
-            total_token_usage,
-            last_token_usage,
-            model_context_window,
-            initial_prompt_tokens,
-        });
+    pub(crate) fn set_token_usage(&mut self, token_info: Option<TokenUsageInfo>) {
+        self.token_usage_info = token_info;
     }
 
     /// Record the history metadata advertised by `SessionConfiguredEvent` so
@@ -432,13 +402,6 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
-                    let current_line = self
-                        .textarea
-                        .text()
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
                     // Clear textarea so no residual text remains.
                     self.textarea.set_text("");
                     // Capture any needed data from popup before clearing it.
@@ -453,22 +416,7 @@ impl ChatComposer {
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
-                            // Extract argument text after the command token.
-                            // Expect forms: "/cmd", "/cmd arg...". Keep raw arg string.
-                            let arg = {
-                                let token = format!("/{}", cmd.command());
-                                if let Some(rest) = current_line.strip_prefix(&token) {
-                                    let s = rest.trim();
-                                    if s.is_empty() {
-                                        None
-                                    } else {
-                                        Some(s.to_string())
-                                    }
-                                } else {
-                                    None
-                                }
-                            };
-                            return (InputResult::Command(cmd, arg), true);
+                            return (InputResult::Command(cmd), true);
                         }
                         CommandItem::UserPrompt(_) => {
                             if let Some(contents) = prompt_content {
@@ -1260,8 +1208,8 @@ impl ChatComposer {
         self.has_focus = has_focus;
     }
 
-    pub(crate) fn set_auto_compact_enabled(&mut self, enabled: bool) {
-        self.auto_compact_enabled = enabled;
+    pub fn set_task_running(&mut self, running: bool) {
+        self.is_task_running = running;
     }
 
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
@@ -1288,11 +1236,16 @@ impl WidgetRef for ChatComposer {
             ActivePopup::None => {
                 let bottom_line_rect = popup_rect;
                 let mut hint: Vec<Span<'static>> = if self.ctrl_c_quit_hint {
+                    let ctrl_c_followup = if self.is_task_running {
+                        " to interrupt"
+                    } else {
+                        " to quit"
+                    };
                     vec![
                         " ".into(),
                         key_hint::ctrl('C'),
                         " again".into(),
-                        " to quit".into(),
+                        ctrl_c_followup.into(),
                     ]
                 } else {
                     let newline_hint_key = if self.use_shift_enter_hint {
@@ -1324,28 +1277,29 @@ impl WidgetRef for ChatComposer {
                     let token_usage = &token_usage_info.total_token_usage;
                     hint.push("   ".into());
                     hint.push(
-                        Span::from(format!("{} tokens used", token_usage.blended_total()))
-                            .style(Style::default().add_modifier(Modifier::DIM)),
+                        Span::from(format!(
+                            "{} tokens used",
+                            format_si_suffix(token_usage.blended_total())
+                        ))
+                        .style(Style::default().add_modifier(Modifier::DIM)),
                     );
                     let last_token_usage = &token_usage_info.last_token_usage;
                     if let Some(context_window) = token_usage_info.model_context_window {
                         let percent_remaining: u8 = if context_window > 0 {
-                            last_token_usage.percent_of_context_window_remaining(
-                                context_window,
-                                token_usage_info.initial_prompt_tokens,
-                            )
+                            last_token_usage.percent_of_context_window_remaining(context_window)
                         } else {
                             100
                         };
-                        hint.push(Span::from("   "));
-                        let style = if self.auto_compact_enabled && percent_remaining <= 20 {
-                            Style::default().fg(Color::Red)
+                        let context_style = if percent_remaining < 20 {
+                            Style::default().fg(Color::Yellow)
                         } else {
                             Style::default().add_modifier(Modifier::DIM)
                         };
-                        hint.push(
-                            Span::from(format!("{percent_remaining}% context left")).style(style),
-                        );
+                        hint.push("   ".into());
+                        hint.push(Span::styled(
+                            format!("{percent_remaining}% context left"),
+                            context_style,
+                        ));
                     }
                 }
 
@@ -1396,10 +1350,6 @@ mod tests {
     use crate::bottom_pane::chat_composer::AttachedImage;
     use crate::bottom_pane::chat_composer::LARGE_PASTE_CHAR_THRESHOLD;
     use crate::bottom_pane::textarea::TextArea;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::style::Color;
-    use ratatui::widgets::WidgetRef;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
@@ -1823,7 +1773,7 @@ mod tests {
         // When a slash command is dispatched, the composer should return a
         // Command result (not submit literal text) and clear its textarea.
         match result {
-            InputResult::Command(cmd, _) => {
+            InputResult::Command(cmd) => {
                 assert_eq!(cmd.command(), "init");
             }
             InputResult::Submitted(text) => {
@@ -1881,7 +1831,7 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::Command(cmd, _) => {
+            InputResult::Command(cmd) => {
                 assert_eq!(cmd.command(), "mention");
             }
             InputResult::Submitted(text) => {
@@ -2410,169 +2360,5 @@ mod tests {
 
         assert_eq!(composer.textarea.text(), "z".repeat(count));
         assert!(composer.pending_pastes.is_empty());
-    }
-
-    #[test]
-    fn slash_popup_model_first_for_mo_ui() {
-        use insta::assert_snapshot;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-
-        let mut composer = ChatComposer::new(
-            true,
-            sender,
-            false,
-            "Ask Codex to do anything".to_string(),
-            false,
-        );
-
-        // Type "/mo" humanlike so paste-burst doesn't interfere.
-        type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
-
-        let mut terminal = match Terminal::new(TestBackend::new(60, 4)) {
-            Ok(t) => t,
-            Err(e) => panic!("Failed to create terminal: {e}"),
-        };
-        terminal
-            .draw(|f| f.render_widget_ref(composer, f.area()))
-            .unwrap_or_else(|e| panic!("Failed to draw composer: {e}"));
-
-        // Visual snapshot should show the slash popup with /model as the first entry.
-        assert_snapshot!("slash_popup_mo", terminal.backend());
-    }
-
-    #[test]
-    fn slash_popup_model_first_for_mo_logic() {
-        use crate::bottom_pane::command_popup::CommandItem;
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-        let mut composer = ChatComposer::new(
-            true,
-            sender,
-            false,
-            "Ask Codex to do anything".to_string(),
-            false,
-        );
-        type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
-
-        match &composer.active_popup {
-            ActivePopup::Command(popup) => match popup.selected_item() {
-                Some(CommandItem::Builtin(cmd)) => {
-                    assert_eq!(cmd.command(), "model")
-                }
-                Some(CommandItem::UserPrompt(_)) => {
-                    panic!("unexpected prompt selected for '/mo'")
-                }
-                None => panic!("no selected command for '/mo'"),
-            },
-            _ => panic!("slash popup not active after typing '/mo'"),
-        }
-    }
-
-    #[test]
-    fn context_left_is_red_when_low_and_auto_compact_enabled() {
-        use crate::app_event::AppEvent;
-        use crate::bottom_pane::AppEventSender;
-        use codex_core::protocol::TokenUsage;
-
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-        let mut composer = ChatComposer::new(
-            true,
-            sender,
-            false,
-            "Ask Codex to do anything".to_string(),
-            false,
-        );
-        composer.set_auto_compact_enabled(true);
-
-        let total = TokenUsage::default();
-        // Force 0% remaining (100 used of 100 window).
-        let last = TokenUsage {
-            total_tokens: 100,
-            ..Default::default()
-        };
-        composer.set_token_usage(total, last, Some(100));
-
-        let area = Rect::new(0, 0, 100, 4);
-        let mut buf = Buffer::empty(area);
-        composer.render_ref(area, &mut buf);
-
-        // Inspect last row for the substring and verify it's red.
-        let y = area.y + area.height - 1;
-        let mut row = String::new();
-        for x in area.x..(area.x + area.width) {
-            if let Some(cell) = buf.cell((x, y)) {
-                row.push_str(cell.symbol());
-            }
-        }
-        let needle = "0% context left";
-        let idx = match row.find(needle) {
-            Some(i) => i,
-            None => {
-                panic!("expected hint substring present");
-            }
-        };
-        let start = idx as u16;
-        let x0 = area.x + start;
-        // Check a couple of chars for red fg (e.g., '0' and '%').
-        let fg0 = buf.cell((x0, y)).and_then(|c| c.style().fg);
-        let fg1 = buf.cell((x0 + 1, y)).and_then(|c| c.style().fg);
-        assert_eq!(fg0, Some(Color::Red));
-        assert_eq!(fg1, Some(Color::Red));
-    }
-
-    #[test]
-    fn context_left_is_dim_when_auto_compact_disabled() {
-        use crate::app_event::AppEvent;
-        use crate::bottom_pane::AppEventSender;
-        use codex_core::protocol::TokenUsage;
-
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-        let mut composer = ChatComposer::new(
-            true,
-            sender,
-            false,
-            "Ask Codex to do anything".to_string(),
-            false,
-        );
-        composer.set_auto_compact_enabled(false);
-
-        let total = TokenUsage::default();
-        let last = TokenUsage {
-            total_tokens: 100,
-            ..Default::default()
-        }; // 0% remaining
-        composer.set_token_usage(total, last, Some(100));
-
-        let area = Rect::new(0, 0, 100, 4);
-        let mut buf = Buffer::empty(area);
-        composer.render_ref(area, &mut buf);
-
-        let y = area.y + area.height - 1;
-        let mut row = String::new();
-        for x in area.x..(area.x + area.width) {
-            if let Some(cell) = buf.cell((x, y)) {
-                row.push_str(cell.symbol());
-            }
-        }
-        let needle = "0% context left";
-        let idx = match row.find(needle) {
-            Some(i) => i,
-            None => {
-                panic!("expected hint substring present");
-            }
-        };
-        let start = idx as u16;
-        let x0 = area.x + start;
-        // When auto-compact is disabled, the hint should not be red.
-        let fg0 = buf.cell((x0, y)).and_then(|c| c.style().fg);
-        let fg1 = buf.cell((x0 + 1, y)).and_then(|c| c.style().fg);
-        assert_ne!(fg0, Some(Color::Red));
-        assert_ne!(fg1, Some(Color::Red));
     }
 }

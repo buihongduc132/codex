@@ -25,6 +25,7 @@ use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
+use codex_protocol::mcp_protocol::ConversationId;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -34,12 +35,12 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
 use tokio::sync::mpsc::unbounded_channel;
-use uuid::Uuid;
 
 fn test_config() -> Config {
     // Use base defaults to avoid depending on host state.
-    codex_core::config::Config::load_from_base_config_with_overrides(
+    Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
         std::env::temp_dir(),
@@ -79,7 +80,7 @@ fn final_answer_without_newline_is_flushed_immediately() {
     // Set up a VT100 test terminal to capture ANSI visual output
     let width: u16 = 80;
     let height: u16 = 2000;
-    let viewport = ratatui::layout::Rect::new(0, height - 1, width, 1);
+    let viewport = Rect::new(0, height - 1, width, 1);
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = crate::custom_terminal::Terminal::with_options(backend)
         .expect("failed to construct terminal");
@@ -132,20 +133,24 @@ fn final_answer_without_newline_is_flushed_immediately() {
 fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual();
 
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
     let configured = codex_core::protocol::SessionConfiguredEvent {
-        session_id: Uuid::nil(),
+        session_id: conversation_id,
         model: "test-model".to_string(),
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: Some(vec![
-            EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
+            EventMsg::UserMessage(UserMessageEvent {
                 message: "hello from user".to_string(),
                 kind: Some(InputMessageKind::Plain),
+                images: None,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "assistant reply".to_string(),
             }),
         ]),
+        rollout_path: rollout_file.path().to_path_buf(),
     };
 
     chat.handle_codex_event(Event {
@@ -175,6 +180,10 @@ fn resumed_initial_messages_render_history() {
     );
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "system configuration APIs are blocked under macOS seatbelt"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
@@ -183,16 +192,15 @@ async fn helpers_are_available_and_do_not_panic() {
     let conversation_manager = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
         "test",
     )));
-    let mut w = ChatWidget::new(
-        cfg,
-        conversation_manager,
-        crate::tui::FrameRequester::test_dummy(),
-        tx,
-        None,
-        Vec::new(),
-        false,
-        false,
-    );
+    let init = ChatWidgetInit {
+        config: cfg,
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: tx,
+        initial_prompt: None,
+        initial_images: Vec::new(),
+        enhanced_keys_supported: false,
+    };
+    let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
     let _ = &mut w;
 }
@@ -209,7 +217,7 @@ fn make_chatwidget_manual() -> (
     let cfg = test_config();
     let bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
-        frame_requester: crate::tui::FrameRequester::test_dummy(),
+        frame_requester: FrameRequester::test_dummy(),
         has_input_focus: true,
         enhanced_keys_supported: false,
         placeholder_text: "Ask Codex to do anything".to_string(),
@@ -222,20 +230,18 @@ fn make_chatwidget_manual() -> (
         active_exec_cell: None,
         config: cfg.clone(),
         initial_user_message: None,
-        total_token_usage: TokenUsage::default(),
-        last_token_usage: TokenUsage::default(),
+        token_info: None,
         stream: StreamController::new(cfg),
         running_commands: HashMap::new(),
         task_complete_pending: false,
         interrupts: InterruptManager::new(),
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
-        session_id: None,
-        frame_requester: crate::tui::FrameRequester::test_dummy(),
+        conversation_id: None,
+        frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
-        queued_user_messages: std::collections::VecDeque::new(),
-        auto_compact_enabled: false,
-        pending_user_message: None,
+        queued_user_messages: VecDeque::new(),
+        suppress_session_configured_redraw: false,
     };
     (widget, rx, op_rx)
 }
@@ -267,16 +273,113 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
     s
 }
 
+// (removed experimental resize snapshot test)
+
+#[test]
+fn exec_approval_emits_proposed_command_and_decision_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+
+    // Trigger an exec approval request with a short, single-line command
+    let ev = ExecApprovalRequestEvent {
+        call_id: "call-short".into(),
+        command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        reason: Some(
+            "this is a test reason such as one that would be produced by the model".into(),
+        ),
+    };
+    chat.handle_codex_event(Event {
+        id: "sub-short".into(),
+        msg: EventMsg::ExecApprovalRequest(ev),
+    });
+
+    // Snapshot the Proposed Command cell emitted into history
+    let proposed = drain_insert_history(&mut rx)
+        .pop()
+        .expect("expected proposed command cell");
+    assert_snapshot!(
+        "exec_approval_history_proposed_short",
+        lines_to_single_string(&proposed)
+    );
+
+    // Approve via keyboard and verify a concise decision history line is added
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    let decision = drain_insert_history(&mut rx)
+        .pop()
+        .expect("expected decision cell in history");
+    assert_snapshot!(
+        "exec_approval_history_decision_approved_short",
+        lines_to_single_string(&decision)
+    );
+}
+
+#[test]
+fn exec_approval_decision_truncates_multiline_and_long_commands() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+
+    // Multiline command: should render proposed command fully in history with prefixes
+    let ev_multi = ExecApprovalRequestEvent {
+        call_id: "call-multi".into(),
+        command: vec!["bash".into(), "-lc".into(), "echo line1\necho line2".into()],
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        reason: Some(
+            "this is a test reason such as one that would be produced by the model".into(),
+        ),
+    };
+    chat.handle_codex_event(Event {
+        id: "sub-multi".into(),
+        msg: EventMsg::ExecApprovalRequest(ev_multi),
+    });
+    let proposed_multi = drain_insert_history(&mut rx)
+        .pop()
+        .expect("expected proposed multiline command cell");
+    assert_snapshot!(
+        "exec_approval_history_proposed_multiline",
+        lines_to_single_string(&proposed_multi)
+    );
+
+    // Deny via keyboard; decision snippet should be single-line and elided with " ..."
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    let aborted_multi = drain_insert_history(&mut rx)
+        .pop()
+        .expect("expected aborted decision cell (multiline)");
+    assert_snapshot!(
+        "exec_approval_history_decision_aborted_multiline",
+        lines_to_single_string(&aborted_multi)
+    );
+
+    // Very long single-line command: decision snippet should be truncated <= 80 chars with trailing ...
+    let long = format!("echo {}", "a".repeat(200));
+    let ev_long = ExecApprovalRequestEvent {
+        call_id: "call-long".into(),
+        command: vec!["bash".into(), "-lc".into(), long.clone()],
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        reason: None,
+    };
+    chat.handle_codex_event(Event {
+        id: "sub-long".into(),
+        msg: EventMsg::ExecApprovalRequest(ev_long),
+    });
+    drain_insert_history(&mut rx); // proposed cell not needed for this assertion
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    let aborted_long = drain_insert_history(&mut rx)
+        .pop()
+        .expect("expected aborted decision cell (long)");
+    assert_snapshot!(
+        "exec_approval_history_decision_aborted_long",
+        lines_to_single_string(&aborted_long)
+    );
+}
+
 // --- Small helpers to tersely drive exec begin/end and snapshot active cell ---
 fn begin_exec(chat: &mut ChatWidget, call_id: &str, raw_cmd: &str) {
     // Build the full command vec and parse it using core's parser,
     // then convert to protocol variants for the event payload.
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
-    let parsed_cmd: Vec<codex_protocol::parse_command::ParsedCommand> =
-        codex_core::parse_command::parse_command(&command)
-            .into_iter()
-            .map(Into::into)
-            .collect();
+    let parsed_cmd: Vec<ParsedCommand> = codex_core::parse_command::parse_command(&command)
+        .into_iter()
+        .map(Into::into)
+        .collect();
     chat.handle_codex_event(Event {
         id: call_id.to_string(),
         msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
@@ -317,7 +420,7 @@ fn active_blob(chat: &ChatWidget) -> String {
     lines_to_single_string(&lines)
 }
 
-fn open_fixture(name: &str) -> std::fs::File {
+fn open_fixture(name: &str) -> File {
     // 1) Prefer fixtures within this crate
     {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -390,35 +493,7 @@ fn exec_history_cell_shows_working_then_completed() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     // Begin command
-    chat.handle_codex_event(Event {
-        id: "call-1".into(),
-        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-            call_id: "call-1".into(),
-            command: vec!["bash".into(), "-lc".into(), "echo done".into()],
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            parsed_cmd: vec![
-                codex_core::parse_command::ParsedCommand::Unknown {
-                    cmd: "echo done".into(),
-                }
-                .into(),
-            ],
-            timeout_ms: 10000,
-        }),
-    });
-
-    // End command successfully
-    chat.handle_codex_event(Event {
-        id: "call-1".into(),
-        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-            call_id: "call-1".into(),
-            stdout: "done".into(),
-            stderr: String::new(),
-            aggregated_output: "done".into(),
-            exit_code: 0,
-            duration: std::time::Duration::from_millis(5),
-            formatted_output: "done".into(),
-        }),
-    });
+    begin_exec(&mut chat, "call-1", "echo done");
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 0, "no exec cell should have been flushed yet");
@@ -448,21 +523,9 @@ fn exec_history_cell_shows_working_then_failed() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     // Begin command
-    chat.handle_codex_event(Event {
-        id: "call-2".into(),
-        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-            call_id: "call-2".into(),
-            command: vec!["bash".into(), "-lc".into(), "false".into()],
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            parsed_cmd: vec![
-                codex_core::parse_command::ParsedCommand::Unknown {
-                    cmd: "false".into(),
-                }
-                .into(),
-            ],
-            timeout_ms: 10000,
-        }),
-    });
+    begin_exec(&mut chat, "call-2", "false");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 0, "no exec cell should have been flushed yet");
 
     // End command with failure
     end_exec(&mut chat, "call-2", "", "Bloop", 2);
@@ -486,21 +549,7 @@ fn interrupt_exec_marks_failed_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     // Begin a long-running command so we have an active exec cell with a spinner.
-    chat.handle_codex_event(Event {
-        id: "call-int".into(),
-        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-            call_id: "call-int".into(),
-            command: vec!["bash".into(), "-lc".into(), "sleep 1".into()],
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            parsed_cmd: vec![
-                codex_core::parse_command::ParsedCommand::Unknown {
-                    cmd: "sleep 1".into(),
-                }
-                .into(),
-            ],
-            timeout_ms: 10000,
-        }),
-    });
+    begin_exec(&mut chat, "call-int", "sleep 1");
 
     // Simulate the task being aborted (as if ESC was pressed), which should
     // cause the active exec cell to be finalized as failed and flushed.
@@ -559,71 +608,17 @@ fn disabled_slash_command_while_task_running_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
     chat.bottom_pane.set_task_running(true);
 
-    // First command
-    chat.handle_codex_event(Event {
-        id: "call-a".into(),
-        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-            call_id: "call-a".into(),
-            command: vec!["bash".into(), "-lc".into(), "echo one".into()],
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            parsed_cmd: vec![
-                codex_core::parse_command::ParsedCommand::Unknown {
-                    cmd: "echo one".into(),
-                }
-                .into(),
-            ],
-            timeout_ms: 10000,
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "call-a".into(),
-        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-            call_id: "call-a".into(),
-            stdout: "one".into(),
-            stderr: String::new(),
-            aggregated_output: "one".into(),
-            exit_code: 0,
-            duration: std::time::Duration::from_millis(5),
-            formatted_output: "one".into(),
-        }),
-    });
-    let first_cells = drain_insert_history(&mut rx);
-    assert_eq!(first_cells.len(), 1, "first exec should insert history");
+    // Dispatch a command that is unavailable while a task runs (e.g., /model)
+    chat.dispatch_command(SlashCommand::Model);
 
-    // Second command
-    chat.handle_codex_event(Event {
-        id: "call-b".into(),
-        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-            call_id: "call-b".into(),
-            command: vec!["bash".into(), "-lc".into(), "echo two".into()],
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            parsed_cmd: vec![
-                codex_core::parse_command::ParsedCommand::Unknown {
-                    cmd: "echo two".into(),
-                }
-                .into(),
-            ],
-            timeout_ms: 10000,
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "call-b".into(),
-        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-            call_id: "call-b".into(),
-            stdout: "two".into(),
-            stderr: String::new(),
-            aggregated_output: "two".into(),
-            exit_code: 0,
-            duration: std::time::Duration::from_millis(5),
-            formatted_output: "two".into(),
-        }),
-    });
-    let second_cells = drain_insert_history(&mut rx);
-    assert_eq!(second_cells.len(), 1, "second exec should extend history");
-    let first_blob = lines_to_single_string(&first_cells[0]);
-    let second_blob = lines_to_single_string(&second_cells[0]);
-    assert!(first_blob.contains('✓'));
-    assert!(second_blob.contains("echo two"));
+    // Drain history and snapshot the rendered error line(s)
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected an error message history cell to be emitted",
+    );
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert_snapshot!(blob);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -633,7 +628,7 @@ async fn binary_size_transcript_snapshot() {
     // Set up a VT100 test terminal to capture ANSI visual output
     let width: u16 = 80;
     let height: u16 = 2000;
-    let viewport = ratatui::layout::Rect::new(0, height - 1, width, 1);
+    let viewport = Rect::new(0, height - 1, width, 1);
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = crate::custom_terminal::Terminal::with_options(backend)
         .expect("failed to construct terminal");
@@ -763,10 +758,10 @@ async fn binary_size_transcript_snapshot() {
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    // Compare only after the last session banner marker. Skip the transient
-    // 'thinking' header if present, and start from the first non-empty line
-    // of content that follows.
-    const MARKER_PREFIX: &str = ">_ You are using MODDED OpenAI Codex in ";
+    // Consider content only after the last session banner marker. Skip the transient
+    // 'thinking' header if present, and start from the first non-empty content line
+    // that follows. This keeps the snapshot stable across sessions.
+    const MARKER_PREFIX: &str = ">_ You are using OpenAI Codex in ";
     let last_marker_line_idx = lines
         .iter()
         .rposition(|l| l.starts_with(MARKER_PREFIX))
@@ -818,13 +813,15 @@ fn approval_modal_exec_snapshot() {
     // Build a chat widget with manual channels to avoid spawning the agent.
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
     // Ensure policy allows surfacing approvals explicitly (not strictly required for direct event).
-    chat.config.approval_policy = codex_core::protocol::AskForApproval::OnRequest;
+    chat.config.approval_policy = AskForApproval::OnRequest;
     // Inject an exec approval request to display the approval modal.
     let ev = ExecApprovalRequestEvent {
         call_id: "call-approve-cmd".into(),
         command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: Some("Model wants to run a command".into()),
+        reason: Some(
+            "this is a test reason such as one that would be produced by the model".into(),
+        ),
     };
     chat.handle_codex_event(Event {
         id: "sub-approve".into(),
@@ -846,7 +843,7 @@ fn approval_modal_exec_snapshot() {
 #[test]
 fn approval_modal_exec_without_reason_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
-    chat.config.approval_policy = codex_core::protocol::AskForApproval::OnRequest;
+    chat.config.approval_policy = AskForApproval::OnRequest;
 
     let ev = ExecApprovalRequestEvent {
         call_id: "call-approve-cmd-noreason".into(),
@@ -872,10 +869,10 @@ fn approval_modal_exec_without_reason_snapshot() {
 #[test]
 fn approval_modal_patch_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
-    chat.config.approval_policy = codex_core::protocol::AskForApproval::OnRequest;
+    chat.config.approval_policy = AskForApproval::OnRequest;
 
     // Build a small changeset and a reason/grant_root to exercise the prompt text.
-    let mut changes = std::collections::HashMap::new();
+    let mut changes = HashMap::new();
     changes.insert(
         PathBuf::from("README.md"),
         FileChange::Add {
@@ -921,7 +918,7 @@ fn interrupt_restores_queued_messages_into_composer() {
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
         msg: EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
-            reason: codex_core::protocol::TurnAbortReason::Interrupted,
+            reason: TurnAbortReason::Interrupted,
         }),
     });
 
@@ -1017,7 +1014,9 @@ fn status_widget_and_approval_modal_snapshot() {
         call_id: "call-approve-exec".into(),
         command: vec!["echo".into(), "hello world".into()],
         cwd: std::path::PathBuf::from("/tmp"),
-        reason: Some("Codex wants to run a command".into()),
+        reason: Some(
+            "this is a test reason such as one that would be produced by the model".into(),
+        ),
     };
     chat.handle_codex_event(Event {
         id: "sub-approve-exec".into(),
@@ -1178,8 +1177,8 @@ fn apply_patch_manual_approval_adjusts_header() {
     assert!(!cells.is_empty(), "expected apply block cell to be sent");
     let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-        blob.contains("Applied patch"),
-        "missing applied patch header: {blob:?}"
+        blob.contains("Change Approved foo.txt"),
+        "expected change approved summary: {blob:?}"
     );
 }
 
@@ -1353,7 +1352,7 @@ fn apply_patch_full_flow_integration_like() {
 fn apply_patch_untrusted_shows_approval_modal() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
     // Ensure approval policy is untrusted (OnRequest)
-    chat.config.approval_policy = codex_core::protocol::AskForApproval::OnRequest;
+    chat.config.approval_policy = AskForApproval::OnRequest;
 
     // Simulate a patch approval request from backend
     let mut changes = HashMap::new();
@@ -1372,8 +1371,8 @@ fn apply_patch_untrusted_shows_approval_modal() {
     });
 
     // Render and ensure the approval modal title is present
-    let area = ratatui::layout::Rect::new(0, 0, 80, 12);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let area = Rect::new(0, 0, 80, 12);
+    let mut buf = Buffer::empty(area);
     (&chat).render_ref(area, &mut buf);
 
     let mut contains_title = false;
@@ -1398,7 +1397,7 @@ fn apply_patch_request_shows_diff_summary() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     // Ensure we are in OnRequest so an approval is surfaced
-    chat.config.approval_policy = codex_core::protocol::AskForApproval::OnRequest;
+    chat.config.approval_policy = AskForApproval::OnRequest;
 
     // Simulate backend asking to apply a patch adding two lines to README.md
     let mut changes = HashMap::new();
@@ -1637,51 +1636,243 @@ fn deltas_then_same_final_message_are_rendered_snapshot() {
     assert_snapshot!(combined);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn status_output_includes_auto_compact_flag() {
+// Combined visual snapshot using vt100 for history + direct buffer overlay for UI.
+// This renders the final visual as seen in a terminal: history above, then a blank line,
+// then the exec block, another blank line, the status line, a blank line, and the composer.
+#[test]
+fn chatwidget_exec_and_status_layout_vt100_snapshot() {
+    // Setup identical scenario
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-    // Enable auto-compact and emit status output
-    chat.auto_compact_enabled = true;
-    chat.add_status_output();
+    chat.handle_codex_event(Event {
+        id: "c1".into(),
+        msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+            call_id: "c1".into(),
+            command: vec!["bash".into(), "-lc".into(), "rg \"Change Approved\"".into()],
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            parsed_cmd: vec![
+                codex_core::parse_command::ParsedCommand::Search {
+                    query: Some("Change Approved".into()),
+                    path: None,
+                    cmd: "rg \"Change Approved\"".into(),
+                }
+                .into(),
+                codex_core::parse_command::ParsedCommand::Read {
+                    name: "diff_render.rs".into(),
+                    cmd: "cat diff_render.rs".into(),
+                }
+                .into(),
+            ],
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "c1".into(),
+        msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+            call_id: "c1".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            aggregated_output: String::new(),
+            exit_code: 0,
+            duration: std::time::Duration::from_millis(16000),
+            formatted_output: String::new(),
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "t1".into(),
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: None,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "t1".into(),
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: "**Investigating rendering code**".into(),
+        }),
+    });
+    chat.bottom_pane
+        .set_composer_text("Summarize recent commits".to_string());
+    chat.handle_codex_event(Event {
+        id: "t1".into(),
+        msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),
+    });
 
-    // Drain and verify presence of the auto_compact line
-    let cells = drain_insert_history(&mut rx);
-    let mut found = false;
-    for lines in cells {
-        let blob = lines_to_single_string(&lines);
-        if blob.contains("auto_compact: true") {
-            found = true;
-            break;
-        }
+    // Dimensions
+    let width: u16 = 80;
+    let ui_height: u16 = chat.desired_height(width);
+    let vt_height: u16 = 40;
+    let viewport = Rect::new(0, vt_height - ui_height, width, ui_height);
+
+    // Use TestBackend for the terminal (no real ANSI emitted by drawing),
+    // but capture VT100 escape stream for history insertion with a separate writer.
+    let backend = ratatui::backend::TestBackend::new(width, vt_height);
+    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    term.set_viewport_area(viewport);
+
+    // 1) Apply any pending history insertions by emitting ANSI to a buffer via insert_history_lines_to_writer
+    let mut ansi: Vec<u8> = Vec::new();
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines_to_writer(&mut term, &mut ansi, lines);
     }
-    assert!(
-        found,
-        "expected /status output to include 'auto_compact: true'"
-    );
+
+    // 2) Render the ChatWidget UI into an off-screen buffer using WidgetRef directly
+    let mut ui_buf = Buffer::empty(viewport);
+    (&chat).render_ref(viewport, &mut ui_buf);
+
+    // 3) Build VT100 visual from the captured ANSI
+    let mut parser = vt100::Parser::new(vt_height, width, 0);
+    parser.process(&ansi);
+    let mut vt_lines: Vec<String> = (0..vt_height)
+        .map(|row| {
+            let mut s = String::with_capacity(width as usize);
+            for col in 0..width {
+                if let Some(cell) = parser.screen().cell(row, col) {
+                    if let Some(ch) = cell.contents().chars().next() {
+                        s.push(ch);
+                    } else {
+                        s.push(' ');
+                    }
+                } else {
+                    s.push(' ');
+                }
+            }
+            s.trim_end().to_string()
+        })
+        .collect();
+
+    // 4) Overlay UI buffer content into the viewport region of the VT output
+    for rel_y in 0..viewport.height {
+        let y = viewport.y + rel_y;
+        let mut line = String::with_capacity(width as usize);
+        for x in 0..viewport.width {
+            let ch = ui_buf[(viewport.x + x, viewport.y + rel_y)]
+                .symbol()
+                .chars()
+                .next()
+                .unwrap_or(' ');
+            line.push(ch);
+        }
+        vt_lines[y as usize] = line.trim_end().to_string();
+    }
+
+    let visual = vt_lines.join("\n");
+    assert_snapshot!(visual);
 }
 
+// E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks
 #[test]
-fn auto_compact_triggers_when_remaining_is_low() {
+fn chatwidget_markdown_code_blocks_vt100_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-    // Configure small remaining percentage and enable auto-compact
-    chat.auto_compact_enabled = true;
-    chat.config.model_context_window = Some(100);
-    chat.last_token_usage.total_tokens = 95; // 5% remaining
 
-    // Submit a message; should trigger a Compact op instead of immediate submit
-    chat.on_user_submit(UserMessage::from("hi".to_string()));
+    // Simulate a final agent message via streaming deltas instead of a single message
 
-    let mut saw_compact = false;
-    while let Ok(ev) = rx.try_recv() {
-        if let AppEvent::CodexOp(codex_op) = ev
-            && matches!(codex_op, Op::Compact)
-        {
-            saw_compact = true;
-            break;
+    chat.handle_codex_event(Event {
+        id: "t1".into(),
+        msg: EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: None,
+        }),
+    });
+    // Build a vt100 visual from the history insertions only (no UI overlay)
+    let width: u16 = 80;
+    let height: u16 = 50;
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    // Place viewport at the last line so that history lines insert above it
+    term.set_viewport_area(Rect::new(0, height - 1, width, 1));
+
+    let mut ansi: Vec<u8> = Vec::new();
+
+    // Simulate streaming via AgentMessageDelta in 2-character chunks (no final AgentMessage).
+    let source: &str = r#"
+
+    -- Indented code block (4 spaces)
+    SELECT *
+    FROM "users"
+    WHERE "email" LIKE '%@example.com';
+
+````markdown
+```sh
+printf 'fenced within fenced\n'
+```
+````
+
+```jsonc
+{
+  // comment allowed in jsonc
+  "path": "C:\\Program Files\\App",
+  "regex": "^foo.*(bar)?$"
+}
+```
+"#;
+
+    let mut it = source.chars();
+    loop {
+        let mut delta = String::new();
+        match it.next() {
+            Some(c) => delta.push(c),
+            None => break,
+        }
+        if let Some(c2) = it.next() {
+            delta.push(c2);
+        }
+
+        chat.handle_codex_event(Event {
+            id: "t1".into(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }),
+        });
+        // Drive commit ticks and drain emitted history lines into the vt100 buffer.
+        loop {
+            chat.on_commit_tick();
+            let mut inserted_any = false;
+            while let Ok(app_ev) = rx.try_recv() {
+                if let AppEvent::InsertHistoryCell(cell) = app_ev {
+                    let lines = cell.display_lines(width);
+                    crate::insert_history::insert_history_lines_to_writer(
+                        &mut term, &mut ansi, lines,
+                    );
+                    inserted_any = true;
+                }
+            }
+            if !inserted_any {
+                break;
+            }
         }
     }
-    assert!(
-        saw_compact,
-        "expected auto-compact to trigger when <=10% remaining"
-    );
+
+    // Finalize the stream without sending a final AgentMessage, to flush any tail.
+    chat.handle_codex_event(Event {
+        id: "t1".into(),
+        msg: EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message: None,
+        }),
+    });
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines_to_writer(&mut term, &mut ansi, lines);
+    }
+
+    let mut parser = vt100::Parser::new(height, width, 0);
+    parser.process(&ansi);
+
+    let mut vt_lines: Vec<String> = (0..height)
+        .map(|row| {
+            let mut s = String::with_capacity(width as usize);
+            for col in 0..width {
+                if let Some(cell) = parser.screen().cell(row, col) {
+                    if let Some(ch) = cell.contents().chars().next() {
+                        s.push(ch);
+                    } else {
+                        s.push(' ');
+                    }
+                } else {
+                    s.push(' ');
+                }
+            }
+            s.trim_end().to_string()
+        })
+        .collect();
+
+    // Compact trailing blank rows for a stable snapshot
+    while matches!(vt_lines.last(), Some(l) if l.trim().is_empty()) {
+        vt_lines.pop();
+    }
+    let visual = vt_lines.join("\n");
+    assert_snapshot!(visual);
 }

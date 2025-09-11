@@ -70,6 +70,7 @@ pub struct SavedSession {
 #[derive(Clone)]
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
+    path: std::path::PathBuf,
 }
 
 enum RolloutCmd {
@@ -101,6 +102,7 @@ impl RolloutRecorder {
             file,
             conversation_id: session_id,
             timestamp,
+            path,
         } = create_log_file(config, conversation_id)?;
 
         let timestamp_format: &[FormatItem] = format_description!(
@@ -133,7 +135,11 @@ impl RolloutRecorder {
             cwd,
         ));
 
-        Ok(Self { tx })
+        Ok(Self { tx, path })
+    }
+    /// Absolute path to the rollout log file for this session.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     pub(crate) async fn record_items(&self, items: &[ResponseItem]) -> std::io::Result<()> {
@@ -231,6 +237,8 @@ struct LogFileInfo {
 
     /// Timestamp for the start of the session.
     timestamp: OffsetDateTime,
+    /// Absolute path to the rollout file.
+    path: std::path::PathBuf,
 }
 
 fn create_log_file(
@@ -267,6 +275,7 @@ fn create_log_file(
         file,
         conversation_id,
         timestamp,
+        path,
     })
 }
 
