@@ -477,6 +477,7 @@ impl Session {
             disable_response_storage,
             exec_timeout_ms: config.exec_timeout_ms,
         };
+        let rollout_path = rollout_recorder.path().to_path_buf();
         let sess = Arc::new(Session {
             session_id,
             tx_event: tx_event.clone(),
@@ -505,6 +506,7 @@ impl Session {
                 history_log_id,
                 history_entry_count,
                 initial_messages,
+                rollout_path,
             }),
         })
         .chain(post_session_configured_error_events.into_iter());
@@ -711,7 +713,7 @@ impl Session {
             command_for_display,
             cwd,
             apply_patch,
-            timeout_ms,
+            ..
         } = exec_command_context;
         let msg = match apply_patch {
             Some(ApplyPatchCommandContext {
@@ -734,7 +736,6 @@ impl Session {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
-                timeout_ms,
             }),
         };
         let event = Event {
@@ -2938,10 +2939,10 @@ fn convert_call_tool_result_to_function_call_output_payload(
 #[cfg(test)]
 mod tests_timeout {
     use super::*;
+    use crate::auth::AuthManager;
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
     use crate::config_types::McpServerConfig;
-    use codex_login::AuthManager;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -3020,6 +3021,7 @@ while True:
                 command: Some("python3".to_string()),
                 args: vec!["-u".to_string(), script_path.to_string_lossy().into()],
                 env: None,
+                startup_timeout_ms: Some(5_000),
             },
         );
 
@@ -3036,17 +3038,18 @@ while True:
             disable_response_storage: config.disable_response_storage,
             notify: config.notify.clone(),
             cwd: config.cwd.clone(),
-            resume_path: None,
         };
-
-        let auth_manager =
-            AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
+        let auth_manager = AuthManager::shared(
+            config.codex_home.clone(),
+            config.preferred_auth_method,
+            "core-tests".to_string(),
+        );
         let (session, mut turn_context) = Session::new(
             configure_session,
             Arc::new(config),
             auth_manager,
             tx_event,
-            None,
+            InitialHistory::New,
         )
         .await
         .unwrap();

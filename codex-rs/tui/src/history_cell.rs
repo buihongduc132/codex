@@ -2,10 +2,15 @@ use crate::diff_render::create_diff_summary;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::markdown::append_markdown;
+use crate::render::line_utils::line_to_static;
+use crate::render::line_utils::prefix_lines;
+use crate::render::line_utils::push_owned_lines;
 use crate::slash_command::SlashCommand;
 use crate::text_formatting::format_and_truncate_tool_result;
+use crate::wrapping::RtOptions;
+use crate::wrapping::word_wrap_line;
+use crate::wrapping::word_wrap_lines;
 use base64::Engine;
-use chrono::Local;
 use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
 use codex_common::elapsed::format_duration;
@@ -17,15 +22,13 @@ use codex_core::plan_tool::PlanItemArg;
 use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::project_doc::discover_project_doc_paths;
-use codex_core::prompt_paths;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
-use codex_core::shell::default_user_shell;
-use codex_login::get_auth_file;
-use codex_login::try_read_auth_json;
+use codex_protocol::mcp_protocol::ConversationId;
+use codex_protocol::num_format::format_with_separators;
 use codex_protocol::parse_command::ParsedCommand;
 use image::DynamicImage;
 use image::ImageReader;
@@ -48,7 +51,6 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use unicode_width::UnicodeWidthStr;
-use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CommandOutput {
@@ -101,8 +103,7 @@ impl HistoryCell for UserHistoryCell {
         let wrapped = textwrap::wrap(
             &self.message,
             textwrap::Options::new(wrap_width as usize)
-                .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit) // Match textarea wrap
-                .word_splitter(textwrap::WordSplitter::NoHyphenation),
+                .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit), // Match textarea wrap
         );
 
         for line in wrapped {
@@ -136,28 +137,16 @@ impl AgentMessageCell {
 
 impl HistoryCell for AgentMessageCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut out: Vec<Line<'static>> = Vec::new();
-        // We want:
-        // - First visual line: "> " prefix (collapse with header logic)
-        // - All subsequent visual lines: two-space prefix
-        let mut is_first_visual = true;
-        let wrap_width = width.saturating_sub(2); // account for prefix
-        for line in &self.lines {
-            let wrapped =
-                crate::insert_history::word_wrap_lines(std::slice::from_ref(line), wrap_width);
-            for (i, piece) in wrapped.into_iter().enumerate() {
-                let mut spans = Vec::with_capacity(piece.spans.len() + 1);
-                spans.push(if is_first_visual && i == 0 && self.is_first_line {
+        word_wrap_lines(
+            &self.lines,
+            RtOptions::new(width as usize)
+                .initial_indent(if self.is_first_line {
                     "> ".into()
                 } else {
                     "  ".into()
-                });
-                spans.extend(piece.spans.into_iter());
-                out.push(spans.into());
-            }
-            is_first_visual = false;
-        }
-        out
+                })
+                .subsequent_indent("  ".into()),
+        )
     }
 
     fn transcript_lines(&self) -> Vec<Line<'static>> {
@@ -282,13 +271,13 @@ impl ExecCell {
     }
 
     fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut out: Vec<Line<'static>> = Vec::new();
         let active_start_time = self
             .calls
             .iter()
             .find(|c| c.output.is_none())
             .and_then(|c| c.start_time);
-        lines.push(Line::from(vec![
+        out.push(Line::from(vec![
             if self.is_active() {
                 // Show an animated spinner while exploring
                 spinner(active_start_time)
@@ -303,7 +292,7 @@ impl ExecCell {
             },
         ]));
         let mut calls = self.calls.clone();
-        let mut first = true;
+        let mut out_indented = Vec::new();
         while !calls.is_empty() {
             let mut call = calls.remove(0);
             if call
@@ -376,39 +365,24 @@ impl ExecCell {
                 lines
             };
             for (title, line) in call_lines {
-                let prefix_len = 4 + title.len() + 1; // "  └ " + title + " "
-                let wrapped = crate::insert_history::word_wrap_lines(
-                    &[line.into()],
-                    width.saturating_sub(prefix_len as u16),
+                let line = Line::from(line);
+                let initial_indent = Line::from(vec![title.cyan(), " ".into()]);
+                let subsequent_indent = " ".repeat(initial_indent.width()).into();
+                let wrapped = word_wrap_line(
+                    &line,
+                    RtOptions::new(width as usize)
+                        .initial_indent(initial_indent)
+                        .subsequent_indent(subsequent_indent),
                 );
-                let mut first_sub = true;
-                for mut line in wrapped {
-                    let mut spans = Vec::with_capacity(line.spans.len() + 1);
-                    spans.push(if first {
-                        first = false;
-                        "  └ ".dim()
-                    } else {
-                        "    ".into()
-                    });
-                    if first_sub {
-                        first_sub = false;
-                        spans.push(title.cyan());
-                        spans.push(" ".into());
-                    } else {
-                        spans.push(" ".repeat(title.width() + 1).into());
-                    }
-                    spans.extend(line.spans.into_iter());
-                    line.spans = spans;
-                    lines.push(line);
-                }
+                push_owned_lines(&wrapped, &mut out_indented);
             }
         }
-        lines
+        out.extend(prefix_lines(out_indented, "  └ ".dim(), "    ".into()));
+        out
     }
 
     fn command_display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use textwrap::Options as TwOptions;
-        use textwrap::WordSplitter;
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         let [call] = &self.calls.as_slice() else {
@@ -428,38 +402,28 @@ impl ExecCell {
         // "• Running " (including trailing space) as the reserved prefix width.
         // If the command contains newlines, always use the multi-line variant.
         let reserved = "• Running ".width();
-        let mut branch_consumed = false;
 
-        if !cmd_display.contains('\n')
-            && cmd_display.width() < (width as usize).saturating_sub(reserved)
+        let mut body_lines: Vec<Line<'static>> = Vec::new();
+
+        let highlighted_lines = crate::render::highlight::highlight_bash_to_lines(&cmd_display);
+
+        if highlighted_lines.len() == 1
+            && highlighted_lines[0].width() < (width as usize).saturating_sub(reserved)
         {
-            lines.push(Line::from(vec![
-                bullet,
-                " ".into(),
-                title.bold(),
-                " ".into(),
-                cmd_display.clone().into(),
-            ]));
+            let mut line = Line::from(vec![bullet, " ".into(), title.bold(), " ".into()]);
+            line.extend(highlighted_lines[0].clone());
+            lines.push(line);
         } else {
-            branch_consumed = true;
             lines.push(vec![bullet, " ".into(), title.bold()].into());
 
-            // Wrap the command line.
-            for (i, line) in cmd_display.lines().enumerate() {
-                let wrapped = textwrap::wrap(
-                    line,
-                    TwOptions::new(width as usize)
-                        .initial_indent("    ")
-                        .subsequent_indent("        ")
-                        .word_splitter(WordSplitter::NoHyphenation),
-                );
-                lines.extend(wrapped.into_iter().enumerate().map(|(j, l)| {
-                    if i == 0 && j == 0 {
-                        vec!["  └ ".dim(), l[4..].to_string().into()].into()
-                    } else {
-                        l.to_string().into()
-                    }
-                }));
+            for hl_line in highlighted_lines.iter() {
+                let opts = crate::wrapping::RtOptions::new((width as usize).saturating_sub(4))
+                    .initial_indent("".into())
+                    .subsequent_indent("    ".into())
+                    // Hyphenation likes to break words on hyphens, which is bad for bash scripts --because-of-flags.
+                    .word_splitter(textwrap::WordSplitter::NoHyphenation);
+                let wrapped_borrowed = crate::wrapping::word_wrap_line(hl_line, opts);
+                body_lines.extend(wrapped_borrowed.iter().map(|l| line_to_static(l)));
             }
         }
         if let Some(output) = call.output.as_ref()
@@ -470,25 +434,13 @@ impl ExecCell {
                 .join("\n");
             if !out.trim().is_empty() {
                 // Wrap the output.
-                for (i, line) in out.lines().enumerate() {
-                    let wrapped = textwrap::wrap(
-                        line,
-                        TwOptions::new(width as usize - 4)
-                            .word_splitter(WordSplitter::NoHyphenation),
-                    );
-                    lines.extend(wrapped.into_iter().map(|l| {
-                        Line::from(vec![
-                            if i == 0 && !branch_consumed {
-                                "  └ ".dim()
-                            } else {
-                                "    ".dim()
-                            },
-                            l.to_string().dim(),
-                        ])
-                    }));
+                for line in out.lines() {
+                    let wrapped = textwrap::wrap(line, TwOptions::new(width as usize - 4));
+                    body_lines.extend(wrapped.into_iter().map(|l| Line::from(l.to_string().dim())));
                 }
             }
         }
+        lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
         lines
     }
 }
@@ -653,10 +605,9 @@ pub(crate) fn new_session_info(
         history_log_id: _,
         history_entry_count: _,
         initial_messages: _,
+        rollout_path: _,
     } = event;
     if is_first_event {
-        // Build timestamp prefix like "[MM-DD_hhmm] "
-        let ts = Local::now().format("[%m-%d_%H%M]").to_string();
         let cwd_str = match relativize_to_home(&config.cwd) {
             Some(rel) if !rel.as_os_str().is_empty() => {
                 let sep = std::path::MAIN_SEPARATOR;
@@ -670,67 +621,35 @@ pub(crate) fn new_session_info(
             .map(|v| !v.is_empty())
             .unwrap_or(false);
 
-        let lines: Vec<Line<'static>> = vec![
-            Line::from(vec![
-                Span::raw(">_ ").dim(),
-                ts.bold().cyan(),
-                Span::raw(" "),
-                Span::styled(
-                    "You are using MODDED OpenAI Codex in",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {cwd_str}")).dim(),
-            ]),
-            Line::from(Span::from("")),
-            Line::from(vec![
-                Span::styled(
-                    " /init",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::White),
-                ),
-                Span::styled(
-                    format!(" - {}", SlashCommand::Init.description()),
-                    Style::default().dim(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    " /status",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::White),
-                ),
-                Span::styled(
-                    format!(" - {}", SlashCommand::Status.description()),
-                    Style::default().dim(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    " /approvals",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::White),
-                ),
-                Span::styled(
-                    format!(" - {}", SlashCommand::Approvals.description()),
-                    Style::default().dim(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    " /model",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::White),
-                ),
-                Span::styled(
-                    format!(" - {}", SlashCommand::Model.description()),
-                    Style::default().dim(),
-                ),
-            ]),
-        ];
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(vec![
+            ">_ ".dim(),
+            "You are using OpenAI Codex in".bold(),
+            format!(" {cwd_str}").dim(),
+        ]));
+        lines.push(Line::from("".dim()));
+        lines.push(Line::from(
+            " To get started, describe a task or try one of these commands:".dim(),
+        ));
+        lines.push(Line::from("".dim()));
+        if !has_agents_md {
+            lines.push(Line::from(vec![
+                " /init".bold(),
+                format!(" - {}", SlashCommand::Init.description()).dim(),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            " /status".bold(),
+            format!(" - {}", SlashCommand::Status.description()).dim(),
+        ]));
+        lines.push(Line::from(vec![
+            " /approvals".bold(),
+            format!(" - {}", SlashCommand::Approvals.description()).dim(),
+        ]));
+        lines.push(Line::from(vec![
+            " /model".bold(),
+            format!(" - {}", SlashCommand::Model.description()).dim(),
+        ]));
         PlainHistoryCell { lines }
     } else if config.model == model {
         PlainHistoryCell { lines: Vec::new() }
@@ -904,262 +823,10 @@ pub(crate) fn new_completed_mcp_tool_call(
 pub(crate) fn new_status_output(
     config: &Config,
     usage: &TokenUsage,
-    session_id: &Option<Uuid>,
-    auto_compact_enabled: bool,
+    session_id: &Option<ConversationId>,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push("/status".magenta().into());
-
-    // 🔧 Raw LLM Parameters (AS-IS)
-    lines.push(Line::from(vec![
-        padded_emoji("🔧").into(),
-        "Raw LLM Parameters".bold(),
-    ]));
-
-    // Core Configuration
-    lines.push(Line::from(vec![
-        "  • model: ".into(),
-        format!("\"{}\"", config.model).into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • model_family: ".into(),
-        format!("\"{}\"", config.model_family.family).into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • model_provider_id: ".into(),
-        format!("\"{}\"", config.model_provider_id).into(),
-    ]));
-
-    if let Some(window) = config.model_context_window {
-        lines.push(Line::from(vec![
-            "  • model_context_window: ".into(),
-            window.to_string().into(),
-        ]));
-    }
-    if let Some(max_tokens) = config.model_max_output_tokens {
-        lines.push(Line::from(vec![
-            "  • model_max_output_tokens: ".into(),
-            max_tokens.to_string().into(),
-        ]));
-    }
-
-    // Approval and Sandbox Policies
-    lines.push(Line::from(vec![
-        "  • approval_policy: ".into(),
-        format!("\"{}\"", config.approval_policy).into(),
-    ]));
-
-    let sandbox_debug = format!("{:?}", config.sandbox_policy);
-    lines.push(Line::from(vec![
-        "  • sandbox_policy: ".into(),
-        sandbox_debug.into(),
-    ]));
-
-    // Shell Environment Policy
-    let shell_env_debug = format!("{:?}", config.shell_environment_policy);
-    lines.push(Line::from(vec![
-        "  • shell_environment_policy: ".into(),
-        shell_env_debug.into(),
-    ]));
-
-    // Execution Settings
-    lines.push(Line::from(vec![
-        "  • exec_timeout_ms: ".into(),
-        config.exec_timeout_ms.to_string().into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • disable_response_storage: ".into(),
-        config.disable_response_storage.to_string().into(),
-    ]));
-
-    // Reasoning Settings (if applicable)
-    if config.model_family.supports_reasoning_summaries {
-        lines.push(Line::from(vec![
-            "  • model_reasoning_effort: ".into(),
-            format!("\"{}\"", config.model_reasoning_effort).into(),
-        ]));
-        lines.push(Line::from(vec![
-            "  • model_reasoning_summary: ".into(),
-            format!("\"{}\"", config.model_reasoning_summary).into(),
-        ]));
-    }
-
-    // Verbosity (GPT-5 only)
-    if let Some(verbosity) = config.model_verbosity {
-        lines.push(Line::from(vec![
-            "  • model_verbosity: ".into(),
-            format!("\"{verbosity}\"").into(),
-        ]));
-    }
-    // Auto-compact setting
-    lines.push(Line::from(vec![
-        "  • auto_compact: ".into(),
-        auto_compact_enabled.to_string().into(),
-    ]));
-
-    // Tool Settings
-    lines.push(Line::from(vec![
-        "  • include_plan_tool: ".into(),
-        config.include_plan_tool.to_string().into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • include_apply_patch_tool: ".into(),
-        config.include_apply_patch_tool.to_string().into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • tools_web_search_request: ".into(),
-        config.tools_web_search_request.to_string().into(),
-    ]));
-
-    // Working Directory
-    lines.push(Line::from(vec![
-        "  • cwd: ".into(),
-        format!("\"{}\"", config.cwd.display()).into(),
-    ]));
-
-    // Instructions
-    if let Some(user_instructions) = &config.user_instructions {
-        let truncated = if user_instructions.len() > 100 {
-            format!(
-                "\"{}...\" ({} chars)",
-                &user_instructions[..97],
-                user_instructions.len()
-            )
-        } else {
-            format!("\"{user_instructions}\"")
-        };
-        lines.push(Line::from(vec![
-            "  • user_instructions: ".into(),
-            truncated.into(),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            "  • user_instructions: ".into(),
-            "null".into(),
-        ]));
-    }
-
-    if let Some(base_instructions) = &config.base_instructions {
-        let truncated = if base_instructions.len() > 100 {
-            format!(
-                "\"{}...\" ({} chars)",
-                &base_instructions[..97],
-                base_instructions.len()
-            )
-        } else {
-            format!("\"{base_instructions}\"")
-        };
-        lines.push(Line::from(vec![
-            "  • base_instructions: ".into(),
-            truncated.into(),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            "  • base_instructions: ".into(),
-            "null".into(),
-        ]));
-    }
-
-    // 🌐 Environment Context (sent to LLM)
-    lines.push(Line::from(vec![
-        padded_emoji("🌐").into(),
-        "Environment Context (sent to LLM)".bold(),
-    ]));
-
-    // Manually create the environment context XML that would be sent to the LLM
-    let shell = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async { default_user_shell().await })
-    });
-
-    // Create the XML manually since EnvironmentContext is private
-    let mut env_xml_lines = vec!["<environment_context>".to_string()];
-    env_xml_lines.push(format!("  <cwd>{}</cwd>", config.cwd.display()));
-    env_xml_lines.push(format!(
-        "  <approval_policy>{}</approval_policy>",
-        config.approval_policy
-    ));
-
-    let sandbox_mode = match &config.sandbox_policy {
-        SandboxPolicy::DangerFullAccess => "danger-full-access",
-        SandboxPolicy::ReadOnly => "read-only",
-        SandboxPolicy::WorkspaceWrite { .. } => "workspace-write",
-    };
-    env_xml_lines.push(format!("  <sandbox_mode>{sandbox_mode}</sandbox_mode>"));
-
-    let network_access = match &config.sandbox_policy {
-        SandboxPolicy::DangerFullAccess => "enabled",
-        SandboxPolicy::ReadOnly => "restricted",
-        SandboxPolicy::WorkspaceWrite { network_access, .. } => {
-            if *network_access {
-                "enabled"
-            } else {
-                "restricted"
-            }
-        }
-    };
-    env_xml_lines.push(format!(
-        "  <network_access>{network_access}</network_access>"
-    ));
-
-    if let Some(shell_name) = shell.name() {
-        env_xml_lines.push(format!("  <shell>{shell_name}</shell>"));
-    }
-    env_xml_lines.push("</environment_context>".to_string());
-
-    // Show the raw XML that gets sent to the LLM
-    lines.push(Line::from("  Raw XML sent to LLM:".dim()));
-    for xml_line in env_xml_lines {
-        lines.push(Line::from(format!("    {xml_line}").dim()));
-    }
-
-    // 🔌 MCP Servers Configuration
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        padded_emoji("🔌").into(),
-        "MCP Servers (affect available tools)".bold(),
-    ]));
-
-    if config.mcp_servers.is_empty() {
-        lines.push(Line::from("  • mcp_servers: {}".dim()));
-    } else {
-        lines.push(Line::from(
-            format!("  • mcp_servers: {} configured", config.mcp_servers.len()).dim(),
-        ));
-        for (name, server_config) in &config.mcp_servers {
-            lines.push(Line::from(
-                format!("    - {}: {}", name, server_config.command).dim(),
-            ));
-            if !server_config.args.is_empty() {
-                lines.push(Line::from(
-                    format!("      args: {:?}", server_config.args).dim(),
-                ));
-            }
-        }
-    }
-
-    // 🏠 Codex Home and Other Paths
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        padded_emoji("🏠").into(),
-        "System Paths".bold(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • codex_home: ".into(),
-        format!("\"{}\"", config.codex_home.display()).dim(),
-    ]));
-    if let Some(sandbox_exe) = &config.codex_linux_sandbox_exe {
-        lines.push(Line::from(vec![
-            "  • codex_linux_sandbox_exe: ".into(),
-            format!("\"{}\"", sandbox_exe.display()).dim(),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            "  • codex_linux_sandbox_exe: ".into(),
-            "null".dim(),
-        ]));
-    }
-
-    lines.push(Line::from(""));
 
     let config_entries = create_config_summary_entries(config);
     let lookup = |k: &str| -> String {
@@ -1239,22 +906,6 @@ pub(crate) fn new_status_output(
     }
     lines.push("".into());
 
-    // Built-in prompt file locations (absolute paths)
-    const INIT_PROMPT_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../prompt_for_init_command.md");
-    lines.push(Line::from(vec![
-        "  • System Prompt: ".into(),
-        prompt_paths::SYSTEM_INSTRUCTIONS_PATH.into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • Init Prompt: ".into(),
-        INIT_PROMPT_PATH.into(),
-    ]));
-    lines.push(Line::from(vec![
-        "  • Compact Prompt: ".into(),
-        prompt_paths::COMPACT_PROMPT_PATH.into(),
-    ]));
-
     // 👤 Account (only if ChatGPT tokens exist), shown under the first block
     let auth_file = get_auth_file(&config.codex_home);
     if let Ok(auth) = try_read_auth_json(&auth_file)
@@ -1301,6 +952,12 @@ pub(crate) fn new_status_output(
 
     lines.push("".into());
 
+    // 💻 Client
+    let cli_version = crate::version::CODEX_CLI_VERSION;
+    lines.push(vec![padded_emoji("💻").into(), "Client".bold()].into());
+    lines.push(vec!["  • CLI Version: ".into(), cli_version.into()].into());
+    lines.push("".into());
+
     // 📊 Token Usage
     lines.push(vec!["📊 ".into(), "Token Usage".bold()].into());
     if let Some(session_id) = session_id {
@@ -1309,23 +966,22 @@ pub(crate) fn new_status_output(
     // Input: <input> [+ <cached> cached]
     let mut input_line_spans: Vec<Span<'static>> = vec![
         "  • Input: ".into(),
-        usage.non_cached_input().to_string().into(),
+        format_with_separators(usage.non_cached_input()).into(),
     ];
-    if let Some(cached) = usage.cached_input_tokens
-        && cached > 0
-    {
+    if usage.cached_input_tokens > 0 {
+        let cached = usage.cached_input_tokens;
         input_line_spans.push(format!(" (+ {cached} cached)").into());
     }
     lines.push(Line::from(input_line_spans));
     // Output: <output>
     lines.push(Line::from(vec![
         "  • Output: ".into(),
-        usage.output_tokens.to_string().into(),
+        format_with_separators(usage.output_tokens).into(),
     ]));
     // Total: <total>
     lines.push(Line::from(vec![
         "  • Total: ".into(),
-        usage.blended_total().to_string().into(),
+        format_with_separators(usage.blended_total()).into(),
     ]));
 
     PlainHistoryCell { lines }
@@ -1379,8 +1035,12 @@ pub(crate) fn new_mcp_tools_output(
 
         lines.push(vec!["  • Server: ".into(), server.clone().into()].into());
 
-        if !cfg.command.is_empty() {
-            let cmd_display = format!("{} {}", cfg.command, cfg.args.join(" "));
+        if cfg.command.as_deref().is_some_and(|s| !s.is_empty()) {
+            let cmd_display = format!(
+                "{} {}",
+                cfg.command.as_deref().unwrap_or(""),
+                cfg.args.join(" ")
+            );
 
             lines.push(vec!["    • Command: ".into(), cmd_display.into()].into());
         }
@@ -1447,32 +1107,8 @@ impl HistoryCell for PlanUpdateCell {
                 .into_iter()
                 .map(|s| s.to_string().set_style(step_style).into())
                 .collect();
-            prefix_lines(step_text, &box_str.into(), &"  ".into())
+            prefix_lines(step_text, box_str.into(), "  ".into())
         };
-
-        fn prefix_lines(
-            lines: Vec<Line<'static>>,
-            initial_prefix: &Span<'static>,
-            subsequent_prefix: &Span<'static>,
-        ) -> Vec<Line<'static>> {
-            lines
-                .into_iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    Line::from(
-                        [
-                            vec![if i == 0 {
-                                initial_prefix.clone()
-                            } else {
-                                subsequent_prefix.clone()
-                            }],
-                            l.spans,
-                        ]
-                        .concat(),
-                    )
-                })
-                .collect()
-        }
 
         let mut lines: Vec<Line<'static>> = vec![];
         lines.push(vec!["• ".into(), "Updated Plan".bold()].into());
@@ -1494,7 +1130,7 @@ impl HistoryCell for PlanUpdateCell {
                 indented_lines.extend(render_step(status, step));
             }
         }
-        lines.extend(prefix_lines(indented_lines, &"  └ ".into(), &"    ".into()));
+        lines.extend(prefix_lines(indented_lines, "  └ ".into(), "    ".into()));
 
         lines
     }
@@ -1534,6 +1170,27 @@ pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
             true,
         ));
     }
+
+    PlainHistoryCell { lines }
+}
+
+/// Create a new history cell for a proposed command approval.
+/// Renders a header and the command preview similar to how proposed patches
+/// show a header and summary.
+pub(crate) fn new_proposed_command(command: &[String]) -> PlainHistoryCell {
+    let cmd = strip_bash_lc_and_escape(command);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec!["• ".into(), "Proposed Command".bold()]));
+
+    let highlighted_lines = crate::render::highlight::highlight_bash_to_lines(&cmd);
+    let initial_prefix: Span<'static> = "  └ ".dim();
+    let subsequent_prefix: Span<'static> = "    ".into();
+    lines.extend(prefix_lines(
+        highlighted_lines,
+        initial_prefix,
+        subsequent_prefix,
+    ));
 
     PlainHistoryCell { lines }
 }
@@ -2159,22 +1816,6 @@ mod tests {
         let lines = cell.display_lines(40);
         let rendered = render_lines(&lines).join("\n");
         insta::assert_snapshot!(rendered);
-    }
-
-    #[test]
-    fn parsed_command_with_newlines_starts_each_line_at_origin() {
-        let parsed = vec![ParsedCommand::Unknown {
-            cmd: "printf 'foo\nbar'".to_string(),
-        }];
-        let lines = exec_command_lines(&[], &parsed, None, None, true);
-        assert!(lines.len() >= 4);
-        // Leading spacer then header line
-        assert!(lines[0].spans.is_empty() || lines[0].spans[0].content.is_empty());
-        assert_eq!(lines[1].spans[0].content, ">_");
-        // First rendered command line starts with two-space + marker.
-        assert_eq!(lines[2].spans[0].content, "  ");
-        // Continuation lines align under the text block.
-        assert_eq!(lines[3].spans[0].content, "    ");
     }
 
     #[test]

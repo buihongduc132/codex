@@ -1360,6 +1360,7 @@ disable_response_storage = true
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_timeout_ms: DEFAULT_TIMEOUT_MS,
             disable_response_storage: false,
             user_instructions: None,
             notify: None,

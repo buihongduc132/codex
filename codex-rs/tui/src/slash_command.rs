@@ -22,8 +22,6 @@ pub enum SlashCommand {
     Status,
     Mcp,
     Logout,
-    Save,
-    Load,
     Quit,
     #[cfg(debug_assertions)]
     TestApproval,
@@ -44,8 +42,6 @@ impl SlashCommand {
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
-            SlashCommand::Save => "save current conversation as a named shortcut",
-            SlashCommand::Load => "load a saved conversation by name or id",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",
         }
@@ -65,9 +61,7 @@ impl SlashCommand {
             | SlashCommand::Compact
             | SlashCommand::Model
             | SlashCommand::Approvals
-            | SlashCommand::Logout
-            | SlashCommand::Save
-            | SlashCommand::Load => false,
+            | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Mention
             | SlashCommand::Status

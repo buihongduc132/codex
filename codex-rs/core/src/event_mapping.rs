@@ -45,6 +45,7 @@ pub(crate) fn map_response_item_to_event_messages(
                         Some(EventMsg::UserMessage(UserMessageEvent {
                             message: text.clone(),
                             kind,
+                            images: None,
                         }))
                     }
                     _ => None,
