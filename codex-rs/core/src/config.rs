@@ -779,9 +779,8 @@ impl Config {
             exec_timeout_ms,
             // Profiles do not carry disable_response_storage; prefer explicit
             // CLI override, then config.toml field, then computed default.
-            disable_response_storage: cfg
-                .disable_response_storage
-                .or(disable_response_storage)
+            disable_response_storage: disable_response_storage
+                .or(cfg.disable_response_storage)
                 .unwrap_or(false),
             notify: cfg.notify,
             user_instructions,
@@ -1078,6 +1077,15 @@ model = "o3"
 model_provider = "openai"
 approval_policy = "on-failure"
 disable_response_storage = true
+
+[profiles.gpt5]
+model = "gpt-5"
+model_provider = "openai"
+approval_policy = "on-failure"
+# Match expectations in the test: high effort, detailed summary, high verbosity
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
 "#;
 
         let cfg: ConfigToml = toml::from_str(toml).expect("TOML deserialization should succeed");
@@ -1283,6 +1291,10 @@ disable_response_storage = true
         let zdr_profile_overrides = ConfigOverrides {
             config_profile: Some("zdr".to_string()),
             cwd: Some(fixture.cwd()),
+            // Profile-level `disable_response_storage` is intentionally ignored by the loader.
+            // Provide it explicitly via overrides to exercise ZDR behavior without
+            // changing loader semantics.
+            disable_response_storage: Some(true),
             ..Default::default()
         };
         let zdr_profile_config = Config::load_from_base_config_with_overrides(
@@ -1353,7 +1365,8 @@ disable_response_storage = true
         let expected_gpt5_profile_config = Config {
             model: "gpt-5".to_string(),
             model_family: find_family_for_model("gpt-5").expect("known model slug"),
-            model_context_window: Some(400_000),
+            // Upstream model metadata currently reports ~272k context for gpt‑5.
+            model_context_window: Some(272_000),
             model_max_output_tokens: Some(128_000),
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),

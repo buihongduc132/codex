@@ -29,3 +29,19 @@ Next checkpoints
 - Track 1: Finish tui compile/test fixes, re‑run targeted tests, then full suite.
 - Track 2: Complete merge from `base/main`, reconcile conflicts, build/tests, summarize decisions.
 
+---
+Merge status (2025-09-11)
+- Branch merged: `tmp/track2-merge-20250910T213818Z` → `main`
+- Merge commit on `main`: merge: integrate track1+track2 work, handoff files, and base/main reconciliation
+- Formatting: ran `just fmt` in `codex-rs`.
+- Lint: ran `just fix -p codex-core` and `just fix -p codex-tui`.
+
+Build/Test summary post-merge
+- codex-core: builds; tests executed with 185 passed, 2 failed.
+  - Failing: `config::tests::test_precedence_fixture_with_gpt5_profile`, `config::tests::test_precedence_fixture_with_zdr_profile`.
+- codex-tui: builds; tests PASS (309 passed).
+- Workspace full suite: not executed yet.
+
+Suggested follow-ups
+- Investigate the two failing `codex-core` config precedence tests (likely fixture expectations updated after upstream config changes: `disable_response_storage` default and provider headers ordering).
+- After addressing, run `cargo test --all-features` from `codex-rs`.
