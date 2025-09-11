@@ -622,10 +622,19 @@ pub(crate) fn new_session_info(
             .unwrap_or(false);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        // MOODED build banner with commit + build time + branch for quick verification
+        let build_sha = env!("CODEX_BUILD_SHA");
+        let build_time = env!("CODEX_BUILD_TIME");
+        let branch = env!("CODEX_BUILD_BRANCH");
         lines.push(Line::from(vec![
             ">_ ".dim(),
+            format!("[MOODED Build: {build_sha} {build_time}]")
+                .magenta()
+                .bold(),
+            " ".into(),
             "You are using OpenAI Codex in".bold(),
-            format!(" {cwd_str}").dim(),
+            format!(" {cwd_str} ").dim(),
+            format!("(branch: {branch})").dim(),
         ]));
         lines.push(Line::from("".dim()));
         lines.push(Line::from(

@@ -67,7 +67,7 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
 async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
     let ReleaseInfo {
         tag_name: latest_tag_name,
-    } = create_client()
+    } = create_client("tui")
         .get(LATEST_RELEASE_URL)
         .send()
         .await?

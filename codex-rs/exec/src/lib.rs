@@ -173,10 +173,11 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
 
     if oss {
-        // Emit a simple banner similar to the TUI header so "codex e <prompt>" also shows it.
+        // Emit a banner with MOODED build metadata for quick version verification.
         {
-            use chrono::Local;
-            let ts = Local::now().format("[%m-%d_%H%M]");
+            let build_sha = env!("CODEX_BUILD_SHA");
+            let build_time = env!("CODEX_BUILD_TIME");
+            let branch = env!("CODEX_BUILD_BRANCH");
             let cwd_display = {
                 let sep = std::path::MAIN_SEPARATOR;
                 if let Some(home) = dirs::home_dir() {
@@ -189,7 +190,9 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
                     config.cwd.display().to_string()
                 }
             };
-            println!(">_ {ts} You are using MODDED OpenAI Codex in {cwd_display}\n");
+            println!(
+                ">_ [MOODED Build: {build_sha} {build_time}] You are using OpenAI Codex in {cwd_display} (branch: {branch})\n"
+            );
         }
         codex_ollama::ensure_oss_ready(&config)
             .await
