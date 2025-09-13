@@ -43,6 +43,10 @@ use crate::client::ModelClient;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::config::Config;
+use crate::config::HookOnError;
+use crate::config::HookRoute;
+use crate::config::HookSpec;
+use crate::config::HooksConfig;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
 use crate::conversation_manager::InitialHistory;
@@ -293,6 +297,9 @@ pub(crate) struct Session {
     codex_linux_sandbox_exe: Option<PathBuf>,
     user_shell: shell::Shell,
     show_raw_agent_reasoning: bool,
+
+    /// Optional event hooks configuration.
+    hooks: Option<HooksConfig>,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -489,6 +496,7 @@ impl Session {
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             user_shell: default_shell,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            hooks: config.hooks.clone(),
         });
 
         // Dispatch the SessionConfiguredEvent first and then report any errors.
@@ -513,6 +521,20 @@ impl Session {
         for event in events {
             if let Err(e) = tx_event.send(event).await {
                 error!("failed to send event: {e:?}");
+            }
+        }
+
+        // Fire session_start hook if configured. Emit output as BackgroundEvent and/or
+        // enqueue LLM input based on routing.
+        if let Some(hooks) = &sess.hooks {
+            if let Some(hook) = &hooks.session_start {
+                sess.run_hook_and_route(
+                    INITIAL_SUBMIT_ID,
+                    "session_start",
+                    hook,
+                    &turn_context.cwd,
+                )
+                .await;
             }
         }
 
@@ -818,9 +840,43 @@ impl Session {
         let is_apply_patch = begin_ctx.apply_patch.is_some();
         let sub_id = begin_ctx.sub_id.clone();
         let call_id = begin_ctx.call_id.clone();
+        let command_for_display = begin_ctx.command_for_display.clone();
 
         self.on_exec_command_begin(turn_diff_tracker, begin_ctx.clone())
             .await;
+
+        // Run pre_command hook (best-effort). If configured as fail-closed and
+        // the hook fails or times out, short-circuit the exec call with an error-like output.
+        if let Some(hooks) = &self.hooks {
+            if let Some(hook) = &hooks.pre_command {
+                let ok = self
+                    .run_hook_and_route(&sub_id, "pre_command", hook, &begin_ctx.cwd)
+                    .await;
+                if !ok && matches!(hook.on_error, HookOnError::FailClosed) {
+                    let msg = format!(
+                        "pre_command hook failed; skipping exec: {}",
+                        command_for_display.join(" ")
+                    );
+                    let output = ExecToolCallOutput {
+                        exit_code: -1,
+                        stdout: StreamOutput::new(String::new()),
+                        stderr: StreamOutput::new(msg.clone()),
+                        aggregated_output: StreamOutput::new(msg),
+                        duration: std::time::Duration::default(),
+                    };
+                    // Emit end event with the synthesized failure and return early.
+                    self.on_exec_command_end(
+                        turn_diff_tracker,
+                        &sub_id,
+                        &call_id,
+                        &output,
+                        is_apply_patch,
+                    )
+                    .await;
+                    return Ok(output);
+                }
+            }
+        }
 
         let result = process_exec_tool_call(
             exec_args.params,
@@ -853,6 +909,15 @@ impl Session {
             is_apply_patch,
         )
         .await;
+
+        // Run post_command hook after emitting end event.
+        if let Some(hooks) = &self.hooks {
+            if let Some(hook) = &hooks.post_command {
+                let _ = self
+                    .run_hook_and_route(&sub_id, "post_command", hook, &begin_ctx.cwd)
+                    .await;
+            }
+        }
 
         result
     }
@@ -1343,6 +1408,14 @@ async fn submission_loop(
             Op::Shutdown => {
                 info!("Shutting down Codex instance");
 
+                // Run session_end hook prior to shutdown notification.
+                if let Some(hooks) = &sess.hooks {
+                    if let Some(hook) = &hooks.session_end {
+                        sess.run_hook_and_route(&sub.id, "session_end", hook, &turn_context.cwd)
+                            .await;
+                    }
+                }
+
                 // Gracefully flush and shutdown rollout recorder on session end so tests
                 // that inspect the rollout file do not race with the background writer.
                 let recorder_opt = sess.rollout.lock_unchecked().take();
@@ -1391,6 +1464,94 @@ async fn submission_loop(
         }
     }
     debug!("Agent loop exited");
+}
+
+impl Session {
+    /// Run a configured hook and route its output according to the spec.
+    /// Returns true if the hook executed with exit code 0 within the timeout.
+    async fn run_hook_and_route(
+        &self,
+        sub_id: &str,
+        point: &str,
+        hook: &HookSpec,
+        cwd: &PathBuf,
+    ) -> bool {
+        let start = std::time::Instant::now();
+        let mut cmd = if hook.command.is_empty() {
+            return true;
+        } else {
+            std::process::Command::new(&hook.command[0])
+        };
+        if hook.command.len() > 1 {
+            cmd.args(&hook.command[1..]);
+        }
+        cmd.current_dir(cwd);
+        // Inherit a minimal environment; no special vars for now.
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(hook.timeout_ms),
+            tokio::task::spawn_blocking(move || cmd.output()),
+        )
+        .await;
+
+        let (ok, stdout, stderr, note) = match outcome {
+            Err(_) => (
+                false,
+                String::new(),
+                String::new(),
+                format!("hook {point} timed out after {}ms", hook.timeout_ms),
+            ),
+            Ok(join_res) => match join_res {
+                Ok(Ok(out)) => {
+                    let code_ok = out.status.success();
+                    let so = String::from_utf8_lossy(&out.stdout).to_string();
+                    let se = String::from_utf8_lossy(&out.stderr).to_string();
+                    let note = format!(
+                        "hook {point} exited {} in {}ms",
+                        out.status.code().unwrap_or(-1),
+                        start.elapsed().as_millis()
+                    );
+                    (code_ok, so, se, note)
+                }
+                Ok(Err(e)) => (
+                    false,
+                    String::new(),
+                    String::new(),
+                    format!("hook {point} spawn failed: {e}"),
+                ),
+                Err(e) => (
+                    false,
+                    String::new(),
+                    String::new(),
+                    format!("hook {point} join failed: {e}"),
+                ),
+            },
+        };
+
+        // Route UI notes and outputs via BackgroundEvent.
+        match hook.route {
+            HookRoute::Ui | HookRoute::Both => {
+                self.notify_background_event(sub_id, format!("{note}"))
+                    .await;
+                if !stdout.trim().is_empty() {
+                    let msg = format!("hook {point} stdout:\n{}", stdout.trim());
+                    self.notify_background_event(sub_id, msg).await;
+                }
+                if !stderr.trim().is_empty() {
+                    let msg = format!("hook {point} stderr:\n{}", stderr.trim());
+                    self.notify_background_event(sub_id, msg).await;
+                }
+            }
+            _ => {}
+        }
+
+        // Route to LLM by enqueuing a new user input turn with stdout content.
+        if matches!(hook.route, HookRoute::Llm | HookRoute::Both) && !stdout.trim().is_empty() {
+            let _ = self.inject_input(vec![InputItem::Text { text: stdout }]);
+        }
+
+        ok
+    }
 }
 
 /// Takes a user message as input and runs a loop where, at each turn, the model
@@ -1877,14 +2038,20 @@ async fn run_compact_task(
         return;
     }
 
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    // Submit compact as a normal user turn instead of a system instruction override
+    // so it works with ChatGPT/Pro accounts that reject custom `instructions`.
+    let mut injected_input = input.clone();
+    injected_input.push(InputItem::Text {
+        text: compact_instructions,
+    });
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(injected_input);
     let turn_input: Vec<ResponseItem> =
         sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
     let prompt = Prompt {
         input: turn_input,
         tools: Vec::new(),
-        base_instructions_override: Some(compact_instructions.clone()),
+        base_instructions_override: None,
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
