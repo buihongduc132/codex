@@ -46,6 +46,16 @@ Build/Test summary post-merge
 - codex-tui: builds; tests PASS (309 passed).
 - Workspace full suite: not executed yet.
 
+---
+Latest updates (2025-09-12)
+- Fixed OpenAI Responses 400 ("Instructions are not valid") by aligning core/prompt.md to base/main and avoiding extra embedded tool instructions when desired.
+- Restored MOODED build banner and added build metadata (sha, time, branch) to TUI and exec paths.
+- Added branch/footer line in TUI composer: a second line now shows " <branch> • <dir> •".
+- Delivered binaries:
+  - TUI (prompt-sync + branch footer): dist/codex-tui-259636b0-mooded-branch2
+  - CLI (with save/load): dist/codex-259636b0-mooded
+- Built TUI variants during iteration: dist/codex-tui-259636b0-mooded-promptsync (prompt sync only).
+
 Suggested follow-ups
 - Investigate the two failing `codex-core` config precedence tests (likely fixture expectations updated after upstream config changes: `disable_response_storage` default and provider headers ordering).
 - After addressing, run `cargo test --all-features` from `codex-rs`.

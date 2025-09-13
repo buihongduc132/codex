@@ -277,7 +277,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 command,
                 cwd,
                 parsed_cmd: _,
-                timeout_ms: _,
             }) => {
                 self.call_id_to_command.insert(
                     call_id.clone(),
@@ -523,6 +522,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     history_log_id: _,
                     history_entry_count: _,
                     initial_messages: _,
+                    ..
                 } = session_configured_event;
 
                 ts_println!(

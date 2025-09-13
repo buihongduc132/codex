@@ -63,6 +63,11 @@ pub struct Cli {
     #[arg(long = "output-last-message")]
     pub last_message_file: Option<PathBuf>,
 
+    /// After completing the task, automatically run a summarization turn.
+    /// "rich" includes extra execution/tool/patch stats; "brief" uses default compact summary.
+    #[arg(long = "auto-summary", value_enum)]
+    pub auto_summary: Option<AutoSummary>,
+
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.
     #[arg(value_name = "PROMPT")]
@@ -76,4 +81,11 @@ pub enum Color {
     Never,
     #[default]
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum AutoSummary {
+    Brief,
+    Rich,
 }

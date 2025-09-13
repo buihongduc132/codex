@@ -90,4 +90,9 @@ pub struct Cli {
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
+
+    /// Load a specific recorded session from the given path.
+    /// Hidden/internal: used by `codex load <name|id>` which resolves to a file path.
+    #[arg(long = "load-path", value_name = "PATH", hide = true)]
+    pub load_path: Option<PathBuf>,
 }

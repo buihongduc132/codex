@@ -306,6 +306,7 @@ async fn run_ratatui_app(
         images,
         resume,
         r#continue,
+        load_path,
         ..
     } = cli;
 
@@ -335,7 +336,9 @@ async fn run_ratatui_app(
         }
     }
 
-    let resume_selection = if r#continue {
+    let resume_selection = if let Some(path) = load_path {
+        resume_picker::ResumeSelection::Resume(path)
+    } else if r#continue {
         match RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
             Ok(page) => page
                 .items

@@ -9,7 +9,7 @@ use codex_core::ConversationManager;
 use codex_core::Cursor as RolloutCursor;
 use codex_core::NewConversation;
 use codex_core::RolloutRecorder;
-use codex_core::SessionMeta;
+// Session meta now lives under protocol
 use codex_core::auth::CLIENT_ID;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -71,6 +71,7 @@ use codex_protocol::mcp_protocol::UserSavedConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InputMessageKind;
+use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
 use mcp_types::JSONRPCErrorError;
 use mcp_types::RequestId;
@@ -198,7 +199,11 @@ impl CodexMessageProcessor {
 
         let opts = LoginServerOptions {
             open_browser: false,
-            ..LoginServerOptions::new(config.codex_home.clone(), CLIENT_ID.to_string())
+            ..LoginServerOptions::new(
+                config.codex_home.clone(),
+                CLIENT_ID.to_string(),
+                config.responses_originator_header.clone(),
+            )
         };
 
         enum LoginChatGptReply {
@@ -399,7 +404,7 @@ impl CodexMessageProcessor {
     }
 
     async fn get_user_agent(&self, request_id: RequestId) {
-        let user_agent = get_codex_user_agent();
+        let user_agent = get_codex_user_agent(Some(&self.config.responses_originator_header));
         let response = GetUserAgentResponse { user_agent };
         self.outgoing.send_response(request_id, response).await;
     }
@@ -431,7 +436,35 @@ impl CodexMessageProcessor {
             }
         };
 
-        let user_saved_config: UserSavedConfig = cfg.into();
+        // Build a minimal UserSavedConfig from ConfigToml
+        let profiles = cfg
+            .profiles
+            .iter()
+            .map(|(k, v)| (k.clone(), (*v).clone().into()))
+            .collect::<HashMap<_, _>>();
+        let tools = cfg
+            .tools
+            .as_ref()
+            .map(|t| codex_protocol::mcp_protocol::Tools {
+                web_search: t.web_search,
+                view_image: t.view_image,
+            });
+        let sandbox_settings = cfg
+            .sandbox_workspace_write
+            .as_ref()
+            .map(|s| codex_protocol::mcp_protocol::SandboxSettings::from(s.clone()));
+        let user_saved_config = UserSavedConfig {
+            approval_policy: cfg.approval_policy,
+            sandbox_mode: cfg.sandbox_mode,
+            sandbox_settings,
+            model: cfg.model,
+            model_reasoning_effort: cfg.model_reasoning_effort,
+            model_reasoning_summary: cfg.model_reasoning_summary,
+            model_verbosity: cfg.model_verbosity,
+            tools,
+            profile: cfg.profile,
+            profiles,
+        };
 
         let response = GetUserSavedConfigResponse {
             config: user_saved_config,
@@ -683,7 +716,8 @@ impl CodexMessageProcessor {
 
         // Verify that the rollout path is in the sessions directory or else
         // a malicious client could specify an arbitrary path.
-        let rollout_folder = self.config.codex_home.join(codex_core::SESSIONS_SUBDIR);
+        // Sessions subdirectory under codex_home
+        let rollout_folder = self.config.codex_home.join("sessions");
         let canonical_rollout_path = tokio::fs::canonicalize(&rollout_path).await;
         let canonical_rollout_path = if let Ok(path) = canonical_rollout_path
             && path.starts_with(&rollout_folder)
@@ -732,62 +766,14 @@ impl CodexMessageProcessor {
             return;
         }
 
-        let removed_conversation = self
-            .conversation_manager
-            .remove_conversation(&conversation_id)
+        self.conversation_manager
+            .remove_conversation(conversation_id)
             .await;
-        if let Some(conversation) = removed_conversation {
-            info!("conversation {conversation_id} was active; shutting down");
-            let conversation_clone = conversation.clone();
-            let notify = Arc::new(tokio::sync::Notify::new());
-            let notify_clone = notify.clone();
-
-            // Establish the listener for ShutdownComplete before submitting
-            // Shutdown so it is not missed.
-            let is_shutdown = tokio::spawn(async move {
-                loop {
-                    select! {
-                        _ = notify_clone.notified() => {
-                            break;
-                        }
-                        event = conversation_clone.next_event() => {
-                            if let Ok(event) = event && matches!(event.msg, EventMsg::ShutdownComplete) {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-
-            // Request shutdown.
-            match conversation.submit(Op::Shutdown).await {
-                Ok(_) => {
-                    // Successfully submitted Shutdown; wait before proceeding.
-                    select! {
-                        _ = is_shutdown => {
-                            // Normal shutdown: proceed with archive.
-                        }
-                        _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                            warn!("conversation {conversation_id} shutdown timed out; proceeding with archive");
-                            notify.notify_one();
-                        }
-                    }
-                }
-                Err(err) => {
-                    error!("failed to submit Shutdown to conversation {conversation_id}: {err}");
-                    notify.notify_one();
-                    // Perhaps we lost a shutdown race, so let's continue to
-                    // clean up the .jsonl file.
-                }
-            }
-        }
+        info!("conversation {conversation_id} archived request: proceeding to move rollout file");
 
         // Move the .jsonl file to the archived sessions subdir.
         let result: std::io::Result<()> = async {
-            let archive_folder = self
-                .config
-                .codex_home
-                .join(codex_core::ARCHIVED_SESSIONS_SUBDIR);
+            let archive_folder = self.config.codex_home.join("archived_sessions");
             tokio::fs::create_dir_all(&archive_folder).await?;
             tokio::fs::rename(&canonical_rollout_path, &archive_folder.join(&file_name)).await?;
             Ok(())
@@ -1155,6 +1141,7 @@ fn derive_config_from_params(
         include_plan_tool,
         include_apply_patch_tool,
         include_view_image_tool: None,
+        disable_response_storage: None,
         show_raw_agent_reasoning: None,
         tools_web_search_request: None,
     };

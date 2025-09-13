@@ -155,6 +155,36 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    fn git_footer_suffix(config: &Config) -> Option<String> {
+        use codex_core::git_info::get_git_repo_root;
+        use std::fs;
+        let root = get_git_repo_root(&config.cwd)?;
+        let head_path = root.join(".git/HEAD");
+        let head = fs::read_to_string(head_path).ok()?;
+        let branch = if let Some(rest) = head.strip_prefix("ref: ") {
+            rest.trim().rsplit('/').next()?.to_string()
+        } else {
+            let sha = head.trim();
+            if sha.len() >= 7 {
+                format!("detached:{}", &sha[..7])
+            } else {
+                return None;
+            }
+        };
+        let dir_name = config
+            .cwd
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        // Format on its own line: " <branch> • <dir> •"
+        let decorated = if dir_name.is_empty() {
+            format!(" {branch} •")
+        } else {
+            format!(" {branch} • {dir_name} •")
+        };
+        Some(decorated)
+    }
     fn flush_answer_stream_with_separator(&mut self) {
         let sink = AppEventHistorySink(self.app_event_tx.clone());
         let _ = self.stream.finalize(true, &sink);
@@ -646,6 +676,7 @@ impl ChatWidget {
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
+                footer_git_suffix: Self::git_footer_suffix(&config),
             }),
             active_exec_cell: None,
             config: config.clone(),
@@ -698,6 +729,7 @@ impl ChatWidget {
                 enhanced_keys_supported,
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
+                footer_git_suffix: Self::git_footer_suffix(&config),
             }),
             active_exec_cell: None,
             config: config.clone(),

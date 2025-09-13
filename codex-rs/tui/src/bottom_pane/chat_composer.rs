@@ -86,6 +86,8 @@ pub(crate) struct ChatComposer {
     // When true, disables paste-burst logic and inserts characters immediately.
     disable_paste_burst: bool,
     custom_prompts: Vec<CustomPrompt>,
+    // Optional suffix to show at the end of the footer line (e.g., "dir:branch").
+    footer_git_suffix: Option<String>,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -102,6 +104,7 @@ impl ChatComposer {
         enhanced_keys_supported: bool,
         placeholder_text: String,
         disable_paste_burst: bool,
+        footer_git_suffix: Option<String>,
     ) -> Self {
         let use_shift_enter_hint = enhanced_keys_supported;
 
@@ -125,6 +128,7 @@ impl ChatComposer {
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
+            footer_git_suffix,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -1234,7 +1238,15 @@ impl WidgetRef for ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::None => {
-                let bottom_line_rect = popup_rect;
+                // If we have a git footer suffix, render two stacked lines: hints + git.
+                let has_git_footer = self.footer_git_suffix.is_some();
+                let (bottom_line_rect, git_line_rect) = if has_git_footer {
+                    let [l1, l2] = Layout::vertical([Constraint::Max(1), Constraint::Max(1)])
+                        .areas(popup_rect);
+                    (l1, Some(l2))
+                } else {
+                    (popup_rect, None)
+                };
                 let mut hint: Vec<Span<'static>> = if self.ctrl_c_quit_hint {
                     let ctrl_c_followup = if self.is_task_running {
                         " to interrupt"
@@ -1303,9 +1315,24 @@ impl WidgetRef for ChatComposer {
                     }
                 }
 
+                if let Some(sfx) = &self.footer_git_suffix {
+                    hint.push("   ".into());
+                    hint.push(
+                        Span::from(sfx.clone()).style(Style::default().add_modifier(Modifier::DIM)),
+                    );
+                }
+
                 Line::from(hint)
                     .style(Style::default().dim())
                     .render_ref(bottom_line_rect, buf);
+
+                if let Some(git_rect) = git_line_rect
+                    && let Some(sfx) = &self.footer_git_suffix
+                {
+                    Line::from(sfx.as_str())
+                        .style(Style::default().dim())
+                        .render_ref(git_rect, buf);
+                }
             }
         }
         let border_style = if self.has_focus {

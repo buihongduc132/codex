@@ -14,7 +14,6 @@ use codex_protocol::mcp_protocol::ConversationId;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
-use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
 use codex_core::protocol::Submission;
 use mcp_types::CallToolRequestParams;
@@ -56,8 +55,11 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager =
-            AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
+        let auth_manager = AuthManager::shared(
+            config.codex_home.clone(),
+            config.preferred_auth_method,
+            config.responses_originator_header.clone(),
+        );
         let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone()));
         let codex_message_processor = CodexMessageProcessor::new(
             auth_manager,
@@ -213,10 +215,7 @@ impl MessageProcessor {
         let client_info = params.client_info;
         let name = client_info.name;
         let version = client_info.version;
-        let user_agent_suffix = format!("{name}; {version}");
-        if let Ok(mut suffix) = USER_AGENT_SUFFIX.lock() {
-            *suffix = Some(user_agent_suffix);
-        }
+        let _user_agent_suffix = format!("{name}; {version}");
 
         self.initialized = true;
 
@@ -238,7 +237,7 @@ impl MessageProcessor {
                 name: "codex-mcp-server".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 title: Some("Codex".to_string()),
-                user_agent: Some(get_codex_user_agent()),
+                user_agent: Some(get_codex_user_agent(None)),
             },
         };
 

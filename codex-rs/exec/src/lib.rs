@@ -2,13 +2,13 @@ mod cli;
 mod event_processor;
 mod event_processor_with_human_output;
 mod event_processor_with_json_output;
+mod exec_config;
 
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
 
 pub use cli::Cli;
-use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
@@ -49,6 +49,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode: sandbox_mode_cli_arg,
         prompt,
         config_overrides,
+        auto_summary,
     } = cli;
 
     // Determine the prompt based on CLI arg and/or stdin.
@@ -149,6 +150,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         include_plan_tool: None,
         include_apply_patch_tool: None,
         include_view_image_tool: None,
+        disable_response_storage: None,
         show_raw_agent_reasoning: oss.then_some(true),
         tools_web_search_request: None,
     };
@@ -162,6 +164,10 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+
+    // Load exec-specific overrides from config.toml (e.g., ~/.qoo/config.toml under qoo).
+    let exec_overrides = exec_config::load_exec_overrides(&config.codex_home);
+    let auto_summary = auto_summary.or(exec_overrides.auto_summary);
     let mut event_processor: Box<dyn EventProcessor> = if json_mode {
         Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone()))
     } else {
@@ -208,7 +214,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-    let conversation_manager = ConversationManager::new(AuthManager::shared(
+    let conversation_manager = ConversationManager::new(codex_core::AuthManager::shared(
         config.codex_home.clone(),
         config.preferred_auth_method,
         config.responses_originator_header.clone(),
@@ -286,9 +292,83 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     let initial_prompt_task_id = conversation.submit(Op::UserInput { items }).await?;
     info!("Sent prompt with event ID: {initial_prompt_task_id}");
 
-    // Run the loop until the task is complete.
+    // Track execution stats to feed into an optional rich auto-summary.
+    #[derive(Default)]
+    struct ExecStats {
+        exec_calls: usize,
+        mcp_calls: usize,
+        patches_applied: usize,
+        errors: usize,
+    }
+    let mut stats = ExecStats::default();
+    let mut ran_auto_summary = false;
+
+    // Run the loop until the task is complete (and optional auto-summary is done).
     while let Some(event) = rx.recv().await {
+        // Lightweight accounting for a richer summary.
+        match &event.msg {
+            EventMsg::ExecCommandBegin(_) => stats.exec_calls += 1,
+            EventMsg::McpToolCallBegin(_) => stats.mcp_calls += 1,
+            EventMsg::PatchApplyBegin(_) => stats.patches_applied += 1,
+            EventMsg::Error(_) | EventMsg::StreamError(_) => stats.errors += 1,
+            _ => {}
+        }
+
+        let is_task_complete =
+            matches!(event.msg, EventMsg::TaskComplete(TaskCompleteEvent { .. }));
         let shutdown: CodexStatus = event_processor.process_event(event);
+
+        if is_task_complete && auto_summary.is_some() && !ran_auto_summary {
+            // Prefer a normal chat turn for auto-summary to avoid upstream `instructions`
+            // constraints and to keep behavior consistent with regular prompts.
+            let prompt_text = match auto_summary {
+                Some(crate::cli::AutoSummary::Rich) => {
+                    // Prefer file override if provided.
+                    if let Some(path) = exec_overrides.summary_rich_file.as_ref() {
+                        match std::fs::read_to_string(path) {
+                            Ok(mut s) => {
+                                // Append stats to give the model extra context.
+                                s.push_str(&format!(
+                                    "\nStats: commands={commands}, tools={tools}, patches={patches}, errors={errors}",
+                                    commands = stats.exec_calls,
+                                    tools = stats.mcp_calls,
+                                    patches = stats.patches_applied,
+                                    errors = stats.errors
+                                ));
+                                s
+                            }
+                            Err(_) => default_rich_summary_prompt(
+                                stats.exec_calls,
+                                stats.mcp_calls,
+                                stats.patches_applied,
+                                stats.errors,
+                            ),
+                        }
+                    } else {
+                        default_rich_summary_prompt(
+                            stats.exec_calls,
+                            stats.mcp_calls,
+                            stats.patches_applied,
+                            stats.errors,
+                        )
+                    }
+                }
+                Some(crate::cli::AutoSummary::Brief) | None => {
+                    if let Some(path) = exec_overrides.summary_brief_file.as_ref() {
+                        std::fs::read_to_string(path)
+                            .unwrap_or_else(|_| default_brief_summary_prompt())
+                    } else {
+                        default_brief_summary_prompt()
+                    }
+                }
+            };
+
+            let items: Vec<InputItem> = vec![InputItem::Text { text: prompt_text }];
+            let _ = conversation.submit(Op::UserInput { items }).await?;
+            ran_auto_summary = true;
+            continue;
+        }
+
         match shutdown {
             CodexStatus::Running => continue,
             CodexStatus::InitiateShutdown => {
@@ -301,4 +381,29 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     }
 
     Ok(())
+}
+
+fn default_rich_summary_prompt(
+    commands: usize,
+    tools: usize,
+    patches: usize,
+    errors: usize,
+) -> String {
+    format!(
+        concat!(
+            "Summarize the conversation so far for the human.",
+            " Start with a one-line outcome, then 3-6 concise bullets.",
+            " Include a short stats line with counts for commands, tools, patches, and errors.",
+            " Keep it actionable and avoid repeating raw logs.\n",
+            "Stats: commands={commands}, tools={tools}, patches={patches}, errors={errors}"
+        ),
+        commands = commands,
+        tools = tools,
+        patches = patches,
+        errors = errors
+    )
+}
+
+fn default_brief_summary_prompt() -> String {
+    "Please summarize the conversation so far in 3-5 concise bullets with next steps.".to_string()
 }
