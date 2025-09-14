@@ -143,7 +143,7 @@ impl ModelProviderInfo {
                 ..
             })
         ) {
-            "https://chatgpt.com/backend-api/codex"
+            "https://chatgpt.com/backend-api"
         } else {
             "https://api.openai.com/v1"
         };
@@ -161,7 +161,6 @@ impl ModelProviderInfo {
 
     /// Apply provider-specific HTTP headers (both static and environment-based)
     /// onto an existing `reqwest::RequestBuilder` and return the updated
-    /// builder.
     fn apply_http_headers(&self, mut builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
@@ -259,7 +258,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: Some(
-                    [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                    [("version".to_string(), "0.34.0".to_string())]
                         .into_iter()
                         .collect(),
                 ),
