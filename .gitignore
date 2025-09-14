@@ -97,3 +97,6 @@ lan-chatgpt-proxy/__pycache__/
 qoo-bridge/__pycache__/
 **/__pycache__/
 *.pyc
+
+# local sqlite WAL
+.gswal/

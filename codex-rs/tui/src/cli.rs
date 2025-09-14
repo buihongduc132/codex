@@ -13,6 +13,15 @@ pub struct Cli {
     #[arg(long = "image", short = 'i', value_name = "FILE", value_delimiter = ',', num_args = 1..)]
     pub images: Vec<PathBuf>,
 
+    /// Optional friendly name to persist a final summary under when using the Compact action.
+    #[arg(long = "summarize-name")]
+    pub summarize_name: Option<String>,
+
+    /// Optionally seed a fresh session with a saved named summary text.
+    /// The summary text is injected as the initial prompt if provided.
+    #[arg(long = "from-summarize")]
+    pub from_summarize: Option<String>,
+
     /// Open an interactive picker to resume a previous session recorded on disk
     /// instead of starting a new one.
     ///

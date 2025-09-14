@@ -18,6 +18,7 @@ use codex_core::protocol::SandboxPolicy;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::mcp_protocol::AuthMode;
+use serde_json;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::error;
@@ -300,15 +301,23 @@ async fn run_ratatui_app(
 
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&config);
-
     let Cli {
         prompt,
         images,
         resume,
         r#continue,
         load_path,
+        from_summarize,
+        summarize_name: _,
         ..
     } = cli;
+
+    let mut prompt = prompt;
+    if prompt.is_none() {
+        if let Some(name) = from_summarize.as_deref() {
+            prompt = read_named_summary_text(&config.codex_home, name);
+        }
+    }
 
     let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
@@ -381,6 +390,17 @@ async fn run_ratatui_app(
     clippy::print_stderr,
     reason = "TUI should no longer be displayed, so we can write to stderr."
 )]
+fn read_named_summary_text(codex_home: &std::path::Path, name: &str) -> Option<String> {
+    let mut p = codex_home.to_path_buf();
+    p.push("summaries");
+    p.push(format!("{name}.json"));
+    let contents = std::fs::read_to_string(&p).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    v.get("summary_text")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
 fn restore() {
     if let Err(err) = tui::restore() {
         eprintln!(

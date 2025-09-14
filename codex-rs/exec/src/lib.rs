@@ -50,6 +50,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         prompt,
         config_overrides,
         auto_summary,
+        summarize_name,
+        from_summarize,
     } = cli;
 
     // Determine the prompt based on CLI arg and/or stdin.
