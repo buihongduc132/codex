@@ -190,6 +190,10 @@ pub struct Config {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
+
+    /// Optional event hooks that run before/after lifecycle points.
+    /// When unset, no hooks run.
+    pub hooks: Option<crate::hooks::HooksConfig>,
 }
 
 impl Config {
@@ -824,6 +828,7 @@ impl Config {
                 .unwrap_or(false),
             include_view_image_tool,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            hooks: None,
         };
         Ok(config)
     }

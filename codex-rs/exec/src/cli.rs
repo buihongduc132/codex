@@ -68,6 +68,17 @@ pub struct Cli {
     #[arg(long = "auto-summary", value_enum)]
     pub auto_summary: Option<AutoSummary>,
 
+    /// Optional friendly name to persist the final summary under.
+    /// When provided, the auto-summary text is saved to ~/.codex/summaries.
+    #[arg(long = "summarize-name")]
+    pub summarize_name: Option<String>,
+
+    /// Optionally seed this exec session with the saved summary text from a previous
+    /// named summary (from ~/.codex/summaries). Useful for starting with a concise
+    /// primer.
+    #[arg(long = "from-summarize")]
+    pub from_summarize: Option<String>,
+
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.
     #[arg(value_name = "PROMPT")]
