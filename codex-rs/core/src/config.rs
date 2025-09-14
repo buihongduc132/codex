@@ -41,6 +41,8 @@ const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "codex_cli_rs";
 
+// (hook type definitions moved near top of file)
+
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -190,6 +192,10 @@ pub struct Config {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
+
+    /// Optional event hooks that run before/after lifecycle points.
+    /// When unset, no hooks run.
+    pub hooks: Option<crate::hooks::HooksConfig>,
 }
 
 impl Config {
@@ -508,6 +514,9 @@ pub struct ConfigToml {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: Option<bool>,
+
+    /// Optional event hooks that run before/after key lifecycle points.
+    pub hooks: Option<crate::hooks::HooksToml>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -762,6 +771,12 @@ impl Config {
             .responses_originator_header_internal_override
             .unwrap_or(DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned());
 
+        // Map hooks config (if any)
+        let hooks_cfg: Option<crate::hooks::HooksConfig> = cfg
+            .hooks
+            .as_ref()
+            .and_then(|h| crate::hooks::HooksConfig::from_toml(h).ok());
+
         let config = Self {
             model,
             model_family,
@@ -824,6 +839,7 @@ impl Config {
                 .unwrap_or(false),
             include_view_image_tool,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            hooks: hooks_cfg,
         };
         Ok(config)
     }
