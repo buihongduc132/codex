@@ -100,3 +100,6 @@ qoo-bridge/__pycache__/
 
 # local sqlite WAL
 .gswal/
+
+# ignore debug binary backups
+artifacts/backups/*_codex_debug_before_merge
