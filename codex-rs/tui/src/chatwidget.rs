@@ -277,6 +277,14 @@ enum RateLimitSwitchPromptState {
     Shown,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ExternalEditorState {
+    #[default]
+    Closed,
+    Requested,
+    Active,
+}
+
 pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
@@ -334,6 +342,7 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
+    external_editor_state: ExternalEditorState,
 }
 
 struct UserMessage {
@@ -1336,6 +1345,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            external_editor_state: ExternalEditorState::Closed,
         };
 
         widget.prefetch_rate_limits();
@@ -1421,6 +1431,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            external_editor_state: ExternalEditorState::Closed,
         };
 
         widget.prefetch_rate_limits();
@@ -1526,6 +1537,14 @@ impl ChatWidget {
     pub(crate) fn apply_external_edit(&mut self, text: String) {
         self.bottom_pane.apply_external_edit(text);
         self.request_redraw();
+    }
+
+    pub(crate) fn external_editor_state(&self) -> ExternalEditorState {
+        self.external_editor_state
+    }
+
+    pub(crate) fn set_external_editor_state(&mut self, state: ExternalEditorState) {
+        self.external_editor_state = state;
     }
 
     pub(crate) fn set_footer_hint_override(&mut self, items: Option<Vec<(String, String)>>) {
@@ -3325,6 +3344,33 @@ impl ChatWidget {
         );
         RenderableItem::Owned(Box::new(flex))
     }
+
+    fn external_editor_cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let pane_height: u16 = self.bottom_pane.desired_height(area.width).min(area.height);
+        if pane_height == 0 {
+            return None;
+        }
+        let pane_start = area
+            .y
+            .saturating_add(area.height.saturating_sub(pane_height));
+        let pane_bottom = pane_start.saturating_add(pane_height.saturating_sub(1));
+        let max_row = area.y.saturating_add(area.height.saturating_sub(1));
+        let mut row = pane_bottom.saturating_add(1);
+        if row > max_row {
+            row = pane_bottom.min(max_row);
+        }
+        let mut col = area.x;
+        if row == pane_bottom {
+            let max_col = area.x.saturating_add(area.width.saturating_sub(1));
+            let pane_rect = Rect::new(area.x, pane_start, area.width, pane_height);
+            if let Some(footer_width) = self.footer_first_line_width(pane_rect) {
+                let available = max_col.saturating_sub(col);
+                let offset = footer_width.min(available);
+                col = col.saturating_add(offset);
+            }
+        }
+        Some((col, row))
+    }
 }
 
 impl Drop for ChatWidget {
@@ -3344,7 +3390,12 @@ impl Renderable for ChatWidget {
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        self.as_renderable().cursor_pos(area)
+        match self.external_editor_state {
+            ExternalEditorState::Requested | ExternalEditorState::Active => {
+                self.external_editor_cursor_pos(area)
+            }
+            ExternalEditorState::Closed => self.as_renderable().cursor_pos(area),
+        }
     }
 }
 
