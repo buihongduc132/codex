@@ -1299,8 +1299,32 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     // Use a hair space (U+200A) to create a subtle, near-invisible separation
     // before the text. VS16 is intentionally omitted to keep spacing tighter
     // in terminals like Ghostty.
-    let lines: Vec<Line<'static>> = vec![vec![format!("■ {message}").red()].into()];
+    let lines: Vec<Line<'static>> = vec![Line::from(format!("■ {message}"))];
     PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_skill_error_event(message: String) -> SkillErrorHistoryCell {
+    SkillErrorHistoryCell { message }
+}
+
+#[derive(Debug)]
+pub(crate) struct SkillErrorHistoryCell {
+    message: String,
+}
+
+impl HistoryCell for SkillErrorHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let indent = "  ";
+        let indent_width = UnicodeWidthStr::width(indent);
+        let wrap_width = usize::from(width.max(1))
+            .saturating_sub(indent_width)
+            .max(1);
+        let wrapped = textwrap::wrap(&self.message, wrap_width)
+            .into_iter()
+            .map(|s| s.to_string().red().into())
+            .collect();
+        prefix_lines(wrapped, indent.into(), indent.into())
+    }
 }
 
 /// Render a user‑friendly plan update styled like a checkbox todo list.

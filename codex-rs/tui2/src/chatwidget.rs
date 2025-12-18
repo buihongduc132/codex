@@ -9,6 +9,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_core::config::Config;
 use codex_core::config::types::Notifications;
+use codex_core::features::Feature;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::openai_models::model_family::ModelFamily;
@@ -410,10 +411,12 @@ impl ChatWidget {
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
-        self.submit_op(Op::ListSkills {
-            cwds: Vec::new(),
-            force_reload: false,
-        });
+        if self.config.features.enabled(Feature::Skills) {
+            self.submit_op(Op::ListSkills {
+                cwds: Vec::new(),
+                force_reload: false,
+            });
+        }
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -1708,6 +1711,11 @@ impl ChatWidget {
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
 
+    pub(crate) fn add_history_cell(&mut self, cell: Box<dyn HistoryCell>) {
+        self.add_boxed_history(cell);
+        self.request_redraw();
+    }
+
     fn queue_user_message(&mut self, user_message: UserMessage) {
         if self.bottom_pane.is_task_running() {
             self.queued_user_messages.push_back(user_message);
@@ -1890,10 +1898,12 @@ impl ChatWidget {
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
             EventMsg::ListSkillsResponse(ev) => self.on_list_skills(ev),
             EventMsg::SkillsUpdateAvailable => {
-                self.submit_op(Op::ListSkills {
-                    cwds: Vec::new(),
-                    force_reload: true,
-                });
+                if self.config.features.enabled(Feature::Skills) {
+                    self.submit_op(Op::ListSkills {
+                        cwds: Vec::new(),
+                        force_reload: true,
+                    });
+                }
             }
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),

@@ -14,8 +14,6 @@ use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::ResumeSelection;
-use crate::skill_error_prompt::SkillErrorPromptOutcome;
-use crate::skill_error_prompt::run_skill_error_prompt;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -710,13 +708,18 @@ impl App {
                         return Ok(true);
                     }
                     let errors = skill_errors_from_info(&errors);
-                    match run_skill_error_prompt(tui, &errors).await {
-                        SkillErrorPromptOutcome::Exit => {
-                            self.chat_widget.submit_op(Op::Shutdown);
-                            return Ok(false);
-                        }
-                        SkillErrorPromptOutcome::Continue => {}
-                    }
+                    let message = errors.first().map_or_else(
+                        || "Skill validation error".to_string(),
+                        |err| {
+                            format!(
+                                "Skill validation error: {} ({})",
+                                err.message,
+                                err.path.display()
+                            )
+                        },
+                    );
+                    let cell = crate::history_cell::new_skill_error_event(message);
+                    self.chat_widget.add_history_cell(Box::new(cell));
                 }
                 self.chat_widget.handle_codex_event(event);
             }
